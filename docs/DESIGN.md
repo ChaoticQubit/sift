@@ -1,7 +1,7 @@
 # Sift — Design Doc / Product Documentation
 
 *Working name: **Sift** — "turn your Instagram saves into a searchable second brain." Rename freely.*
-*Created 2026-07-22 · Updated 2026-07-22 (v2: hybrid ingestion, captions, Agno agents, guardrail harness) · Owner: Spongebob*
+*Created 2026-07-22 · Updated 2026-07-22 (v3: quarantined-interpreter pipeline — deterministic extract/write, one tool-less LLM on untrusted text) · Owner: Spongebob*
 *Single source of truth. Living document — edit as decisions change. Agent/guardrail detail lives in `AGENTS.md`.*
 
 ---
@@ -18,7 +18,7 @@ You save a lot to Instagram — reels, carousels, links, videos of people talkin
 4. **Indexes** it for **RAG search** ("what was that recipe with brown butter?").
 5. **Surfaces** a **review digest** of candidate time-sensitive items (deadlines, applications) that **you confirm** — no unattended autopilot.
 
-It is built as **Agno agents** behind one callable core, with a **guardrail harness** on every agent (PII, no shell, Rule-of-Two for untrusted content). It is deliberately shaped to **fold into the Life Planner "second brain that acts"** later as a background agent + dashboard.
+It is built as a **deterministic pipeline around one quarantined Agno interpreter agent** behind one callable core, with a **guardrail harness** (PII on LLM-bound text, no tools for any model that reads untrusted content — the Rule of Two). It is deliberately shaped to **fold into the Life Planner "second brain that acts"** later as a background agent + dashboard.
 
 ---
 
@@ -40,7 +40,7 @@ It is built as **Agno agents** behind one callable core, with a **guardrail harn
 2. **Minimize account risk; never the mobile private API.** Ingestion is the **local-first hybrid** in §4. **`instagrapi` (mobile private API) is banned as a dependency** — it's the highest-ban-risk path and it's your main account. The recurring path is a *read-only, low-cadence, cookie-authenticated* local fetch; new items come in via a zero-risk share-sheet; DMs/backfill come from the official export.
 3. **Captions are first-class.** Every item's caption is extracted and analyzed, not treated as metadata. It's often the richest content.
 4. **Agno for all agents.** Every agent in Sift (and across the broader project) is built on **Agno v2** — persistent storage, RAG, reasoning, tools, MCP. Not LangChain. See `AGENTS.md`.
-5. **Guardrail harness on every agent.** PII block (Presidio + LLM Guard + egress allowlist); **no generic shell/code tool** — only narrow typed tools; human-approval on writes; **Rule of Two** for untrusted caption/link content; sandbox any unavoidable code-exec. See `AGENTS.md`.
+5. **Guardrail harness on every agent.** The **Rule of Two**, enforced structurally: any model that reads untrusted content (captions, OCR, transcripts, link text) holds **no tools and no secrets**; everything with capability (extraction, vault writes, tagging) is deterministic code acting on schema-validated typed records. PII is masked on **LLM-bound** text (Presidio + LLM Guard) — the vault keeps your data verbatim. **No generic shell/code tool anywhere**; sandbox any unavoidable code-exec. See `AGENTS.md`.
 6. **Draft-then-approve.** Action items are *proposed* into a review digest; nothing schedules/alerts autonomously in v1.
 7. **Fold-ready.** Same vault + Life-Planner-compatible frontmatter; one callable `core.run()`; ingestion behind swappable adapters so a future scheduled agent just changes the source.
 8. **Thin v1, honest scope.** Ship reliable modalities first; defer the time-sinks (§3).
@@ -94,7 +94,9 @@ It is built as **Agno agents** behind one callable core, with a **guardrail harn
 
 ## 5. Architecture
 
-**v1 = Agno agents behind a callable `core.run()`, invoked by a thin CLI now; a scheduled agent + dashboard later (Life Planner).** Full agent/guardrail spec in `AGENTS.md`; summary here.
+**v1 = a deterministic pipeline around one quarantined Agno interpreter agent, behind a callable `core.run()`, invoked by a thin CLI now; a scheduled agent + dashboard later (Life Planner).** Full agent/guardrail spec in `AGENTS.md`; summary here.
+
+The load-bearing shape (the **Rule of Two**, enforced structurally): **the only model that reads untrusted text has no tools and no secrets; everything with capability is plain code operating on schema-validated typed records.** Extraction needs no intelligence (`router.py` dispatches by medium), so it is not an agent. Writes need no model, so no agent holds write tools.
 
 ```mermaid
 flowchart TD
@@ -106,24 +108,25 @@ flowchart TD
     A1 --> N[Item + caption]
     A2 --> N
     A3 --> N
-    N --> Q{{Rule of Two}}
-    Q --> RA[QUARANTINED reader agent<br/>Agno · no secrets · no side-effect tools<br/>caption/OCR/STT/link -> typed record]
-    RA --> PA[PRIVILEGED agent<br/>Agno · acts on SANITIZED data only<br/>classify · summarize · action items]
-    PA --> W[vault writer<br/>markdown + frontmatter]
+    N --> X[deterministic extract<br/>router -> caption / OCR / STT / link<br/>no LLM, no agent]
+    X --> SZ[sanitize<br/>spotlight · strip U+E0000–E007F<br/>PII-mask the LLM-bound copy]
+    SZ --> IA[QUARANTINED interpreter agent<br/>Agno · NO tools · NO secrets<br/>untrusted text -> strict typed record]
+    IA --> VAL{{schema validation}}
+    VAL --> W[deterministic writer<br/>markdown + frontmatter<br/>verbatim caption from Item]
     W --> V[(Obsidian vault)]
     V --> K[Agno Knowledge / RAG<br/>LanceDB]
-    PA --> DR[Action Review.md<br/>you confirm]
+    VAL --> DR[Action Review.md<br/>you confirm]
     K --> S[sift search]
     style V fill:#2d3b2d,color:#fff
     style DR fill:#3b2d2d,color:#fff
-    style Q fill:#332a3d,color:#fff
+    style IA fill:#332a3d,color:#fff
 ```
 
 **Components (`src/sift/`):**
 - `ingest/` — `cookie_fetch.py`, `share_capture.py`, `dyi_export.py`; each emits normalized `Item`s (with `caption`). No `instagrapi`.
-- `agents/` — Agno agent definitions: the **reader** (quarantined) and **enricher** (privileged), plus a **search** agent. Wired as an Agno **Team** or **Workflow**.
-- `tools/` — narrow typed `@tool` functions the agents may call: `ocr_images`, `transcribe_audio`, `fetch_link`, `save_item`, `tag_item`. **No shell/code tool.**
-- `guardrails/` — Agno `pre_hooks`/`post_hooks`: PII (Presidio), prompt-injection, output scan (LLM Guard), egress allowlist. See `AGENTS.md`.
+- `agents/` — Agno agent definitions: the **interpreter** (quarantined, tool-less: untrusted text → strict `Interpretation` record) and a **search** agent (F5). No reader/enricher pair, no Team: the pipeline is deterministic code.
+- `extract/` — deterministic extractors called by `router.py` (plain code, not agent tools). **No shell/code tool anywhere.**
+- `guardrails/` — Agno `pre_hooks`/`post_hooks` on the interpreter: PII (Presidio), prompt-injection, output scan (LLM Guard); plus the fetcher egress policy. See `AGENTS.md`.
 - `vault/` — `frontmatter.py` (schema §6) + `writer.py` (idempotent).
 - `rag/` — Agno Knowledge over LanceDB (+ `search.py`).
 - `review/` — `action_items.py` + `digest.py`.
@@ -176,13 +179,13 @@ tags: [recipe, dessert]
 - **Links.** trafilatura readable content + metadata (Mercury is dead).
 - **On-screen/burned-in video text — DEFERRED.** Keyframe dedup + OCR.
 
-Every extractor returns a uniform `Extraction { text, languages, confidence, artifacts }`. Extraction runs inside the **quarantined reader agent** (§5, `AGENTS.md`) — it has no secrets and no side-effecting tools, because caption/link text is untrusted.
+Every extractor returns a uniform `Extraction { text, languages, confidence, artifacts }`. Extraction is **deterministic pipeline code — no model involved** (§5). Its output is untrusted text; it is sanitized and then handed to the quarantined tool-less **interpreter** agent (§8, `AGENTS.md`). Fetcher egress policy: gallery-dl/yt-dlp are scoped to `instagram.com` + its CDNs (`cdninstagram.com`, `fbcdn.net`) and may use the session cookies (that is their job); the link fetcher may hit any public URL but is **credential-less** (never sends cookies/auth), **blocks private/loopback addresses** (SSRF guard), and its response is always treated as untrusted.
 
 ---
 
-## 8. Enrichment (privileged agent)
+## 8. Interpretation (the one quarantined agent)
 
-The **privileged** Agno agent receives only **sanitized structured records** (never raw caption text with live instructions) and produces classification, a 1–3 sentence summary, tags, and candidate action items via a strict Pydantic schema, with reasoning enabled (`ReasoningTools`). Entertainment items short-circuit to a one-liner.
+The **interpreter** is the only model that reads untrusted content. It is an Agno agent with **no tools and no secrets**: sanitized caption/OCR/transcript/link text in, a strict Pydantic `Interpretation` record out — classification, a 1–3 sentence summary, tags, candidate action items, with reasoning enabled. Off-schema output is rejected and logged, never retried into compliance by loosening. A hijacked interpreter can only emit a malformed record — it has no levers to pull. Downstream, plain code (not a model) validates the record, writes the note (entertainment short-circuits to a one-liner), and updates the digest. PII is masked only on the LLM-bound copy; the vault note carries the verbatim caption from the `Item`.
 
 ---
 
@@ -237,7 +240,7 @@ Design consequence held now: no core logic in `cli.py`; no assumption of a human
 2. **Captions can lie / be sparse** but are still the best default signal; don't assume the caption == the content — reconcile with OCR/STT when present.
 3. **OCR is not "solved" for Instagram content** (memes/screenshots/stylized/warped). Keep a vision-LLM fallback; validate on your own images.
 4. **Whisper multilingual is uneven** (low-resource, music-bed, overlap). Major-language target in v1; flag low-confidence; translation X→English only.
-5. **Untrusted-content injection is a real threat.** Captions and shared links are a known indirect-prompt-injection vector. **Mitigation:** Rule of Two + spotlighting + Unicode-tag stripping + egress allowlist (`AGENTS.md`). Injection isn't fully solvable — the goal is to shrink blast radius.
+5. **Untrusted-content injection is a real threat.** Captions and shared links are a known indirect-prompt-injection vector. **Mitigation:** Rule of Two enforced structurally (the tool-less interpreter) + spotlighting + Unicode-tag stripping + credential-less fetches + strict output schema (`AGENTS.md`). Injection isn't fully solvable — the goal is to make a hijacked model powerless, not to catch every payload.
 6. **Effort:** caption+links+carousels human-in-the-loop ≈ a couple of weekends; a trusted daily-driver ≈ ~1 month; robust unattended ≈ multi-month. Time-box v1.
 
 ---
@@ -251,10 +254,10 @@ Unchanged from the verdict: closest adopt-instead is **Fabric** (rejected — cl
 ## 15. Build phases (shippable cuts)
 
 - **F0 — Foundation.** Repo, config, Agno wired (SQLite Db + a hello-world agent), `Item`/`Extraction`/`Note` types, vault writer + frontmatter (incl. `caption`), dedup ledger, dry run on a fixture. *Done = a fake item → correct note.*
-- **F0.5 — Guardrail harness.** Base `pre_hooks`/`post_hooks` (PII + prompt-injection), tool-allowlist policy, egress allowlist, Rule-of-Two skeleton (reader vs privileged agent). *Done = a caption with an injection string + a fake SSN is neutralized in a test.* See `AGENTS.md`.
+- **F0.5 — Guardrail harness.** Deterministic sanitize step (spotlight, strip `U+E0000–E007F`, neutralize md links), PII masking for LLM-bound text (Agno + Presidio) + LLM Guard output scan, fetcher egress policy (credential-less link fetch, private-IP block, Instagram-scoped gallery-dl), and the quarantined **tool-less interpreter** skeleton with strict output schema. *Done = a caption with an injection string + a fake SSN is neutralized in a test, and off-schema interpreter output is rejected.* See `AGENTS.md`.
 - **F1 — Ingest: DYI export + captions.** `dyi_export.py` (saved + self-DMs + captions). *Done = your export backfills notes, captions populated.*
 - **F2 — Ingest: cookie_fetch + captions.** gallery-dl saved-folder incremental fetch on your machine; media + caption metadata; weekly scheduler. *Done = a scheduled run pulls only new saves, read-only, backs off on 429.*
-- **F3 — Extract: captions + carousels + links** through the reader agent → classify/summarize (privileged agent) → notes. *Done = a real carousel and a real link post become good notes.*
+- **F3 — Extract: captions + carousels + links** through the deterministic router → sanitize → **interpreter** (strict schema) → deterministic writer → notes. *Done = a real carousel and a real link post become good notes.*
 - **F4 — Reels STT.** freeflow/faster-whisper for major-language reels. *Done = an English reel transcribed; low-confidence flagged.*
 - **F5 — RAG search** (Agno Knowledge + LanceDB). *Done = find a note by content.*
 - **F6 — Action review** digest. *Done = a real deadline surfaces; nothing fires unconfirmed.*
@@ -275,6 +278,7 @@ You run your export **and** a scheduled `cookie_fetch` through it; your backlog 
 |---------|---------|------|
 | Project name | Sift | rename freely |
 | Agent framework | **Agno v2** (pinned) | §12, `AGENTS.md` |
+| Pipeline shape | **One quarantined tool-less interpreter; deterministic extract/write** | decided 2026-07-22 — replaces the reader/enricher pair; §5, §8 |
 | Storage | SQLite (agent) + LanceDB (RAG) | PgVector upgrade path |
 | Recurring ingest | `cookie_fetch` weekly, read-only | daily ceiling; never hourly |
 | DMs / backfill | `dyi_export` (occasional) | only safe DM route |

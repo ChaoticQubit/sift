@@ -5,7 +5,7 @@ from ..config import Settings
 
 
 def get_db(settings: Settings):
-    """TODO F0: return an Agno Db bound to settings.db_url (SQLite). Shared by reader + enricher."""
+    """TODO F0: return an Agno Db bound to settings.resolved_db_url (SQLite). Shared by interpreter + search."""
     raise NotImplementedError("F0: Agno Db")
 
 

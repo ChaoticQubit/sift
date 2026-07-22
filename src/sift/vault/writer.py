@@ -1,4 +1,7 @@
-"""Idempotent markdown note writer. DESIGN.md §6; CLAUDE.md rule 3."""
+"""Idempotent markdown note writer — deterministic code, never an agent tool. DESIGN.md §6; CLAUDE.md rules 4-5.
+
+The caption in the note comes VERBATIM from the Item (PII masking is LLM-bound only, AGENTS.md §3a).
+"""
 from __future__ import annotations
 
 from ..config import Settings

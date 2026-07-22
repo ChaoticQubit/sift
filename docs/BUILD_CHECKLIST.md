@@ -5,9 +5,9 @@ Phased, checkbox tasks for Claude Code. Ship each phase before the next. ⭐ = s
 ---
 
 ## F0 — Foundation `[M]`  *(no Instagram, no untrusted content yet)*
-- [ ] `pyproject.toml` (deps incl. `agno`, `lancedb`, `presidio-analyzer`, `presidio-anonymizer`, `llm-guard`, `gallery-dl`, `yt-dlp`, `trafilatura`, `dateparser`, `faster-whisper`, `typer`; `[dev]`: pytest/ruff/black), `.gitignore`, `.env.example`.
-- [ ] `config.py` — pydantic-settings: `SIFT_VAULT_PATH`, `SIFT_DB_URL` (sqlite), LLM provider+key, embedder, feature flags (`enable_instagrapi=false` and it stays unused).
-- [ ] `models.py` — `Item` (incl. `caption`, `ingest_via`), `Extraction`, `ActionItem`, `Note`, `RunReport`.
+- [ ] `pyproject.toml` — core deps light (`agno`, `gallery-dl`, `yt-dlp`, `trafilatura`, `dateparser`, `typer`, `pydantic*`, `python-frontmatter`); heavy deps in extras: `[guardrails]` (presidio, llm-guard), `[stt]` (faster-whisper), `[rag]` (lancedb), `[ocr]` (F3); `[dev]`: pytest/ruff/black. `.gitignore`, `.env.example`.
+- [ ] `config.py` — pydantic-settings: `SIFT_VAULT_PATH`, `SIFT_WORK_DIR` (default `<vault>/.sift`), `SIFT_DB_URL` (sqlite), LLM provider+key, embedder, feature flags. No instagrapi flag — the ban is a rule (CLAUDE.md 1), not a toggle.
+- [ ] `models.py` — `Item` (incl. `caption`, `ingest_via`), `Extraction`, `Interpretation`, `ActionItem`, `Note`, `RunReport`.
 - [ ] `db/storage.py` — Agno `Db` on SQLite (sessions + memory); dedup ledger.
 - [ ] `vault/frontmatter.py` + `vault/writer.py` — §6 schema (incl. `caption`), idempotent write, classification routing.
 - [ ] `agents/` — a minimal Agno agent wired to storage (hello-world) to prove the framework + version pin.
@@ -16,12 +16,12 @@ Phased, checkbox tasks for Claude Code. Ship each phase before the next. ⭐ = s
 - [ ] ⭐ **Dry run:** a fixture item → correct note (caption populated), idempotent. *Done.*
 
 ## F0.5 — Guardrail harness `[M]`  dep: F0  *(do this before any untrusted content)*
-- [ ] `guardrails/hooks.py` — base `pre_hooks`/`post_hooks` wiring.
-- [ ] `guardrails/injection.py` — Agno `PromptInjectionGuardrail` + `UntrustedContentGuardrail` (spotlight/delimit, strip `U+E0000–U+E007F`, sanitize md links).
-- [ ] `guardrails/pii.py` — Agno `PIIDetectionGuardrail(mask=True)` + `PresidioGuardrail(BaseGuardrail)`; output `SensitiveOutputGuardrail` (LLM Guard).
-- [ ] `guardrails/egress.py` — outbound HTTP allowlist (instagram.com + own API).
-- [ ] `agents/reader.py` (quarantined: no secrets, read tools only) + `agents/enricher.py` (privileged: sanitized data only, `requires_confirmation` on writes) — the **Rule of Two**.
-- [ ] ⭐ **Guardrail tests:** a caption containing an injection payload + a fake SSN/email is neutralized (blocked/masked) and never reaches a privileged tool. *Done.* See `AGENTS.md`.
+- [ ] `guardrails/hooks.py` — the interpreter's `pre_hooks`/`post_hooks` wiring (order cheap→expensive).
+- [ ] `guardrails/injection.py` — Agno `PromptInjectionGuardrail` + `UntrustedContentGuardrail` (spotlight/delimit, strip `U+E0000–U+E007F`, sanitize md links) — deterministic sanitize usable outside hooks too.
+- [ ] `guardrails/pii.py` — Agno `PIIDetectionGuardrail(mask=True)` + `PresidioGuardrail(BaseGuardrail)` on LLM-bound text; output `SensitiveOutputGuardrail` (LLM Guard). Vault stays verbatim (AGENTS.md §3a).
+- [ ] `guardrails/egress.py` — fetcher policy: credential-less link fetch, private/loopback-IP block (SSRF guard); gallery-dl/yt-dlp scoped to instagram.com + CDNs.
+- [ ] `agents/interpreter.py` — the quarantined **tool-less** interpreter skeleton: strict `Interpretation` output schema, guardrail hooks attached, NO tools, NO secrets — the **Rule of Two** (AGENTS.md §2).
+- [ ] ⭐ **Guardrail tests:** a caption containing an injection payload + a fake SSN/email is neutralized (blocked/masked) on the LLM-bound path, and off-schema interpreter output is rejected. *Done.* See `AGENTS.md`.
 
 ## F1 — Ingest: DYI export + captions `[M]`  dep: F0
 - [ ] `ingest/dyi_export.py` — parse ZIP: saved posts, saved collections (names), self-DM/note-to-self thread, **captions**. JSON + HTML shapes. Stable `Item.id`.
@@ -31,9 +31,9 @@ Phased, checkbox tasks for Claude Code. Ship each phase before the next. ⭐ = s
 - [ ] `ingest/cookie_fetch.py` — `gallery-dl --cookies-from-browser` on the `saved` extractor; caption via metadata postprocessor; `--download-archive` incremental; **read-only**; `sleep-request>=3s`; single session; **429 back-off (pause days)**. Playwright fallback stub.
 - [ ] Weekly scheduler (cron/launchd) doc + `sift run --source cookie_fetch`. *Done = a scheduled run pulls only NEW saves, read-only, on your machine/home IP, backs off on 429.*
 
-## F3 — Extract + enrich (through the agents) `[L]`  dep: F0.5, F1
-- [ ] `extract/captions.py` (first-class), `extract/images_ocr.py` (loop N; PaddleOCR + VLM fallback), `extract/links.py` (trafilatura) — invoked by the **reader** agent as typed tools.
-- [ ] `agents/enricher.py` — classify + summarize + candidate action items (strict Pydantic schema, reasoning on) on sanitized data → `Note`.
+## F3 — Extract + interpret `[L]`  dep: F0.5, F1
+- [ ] `extract/captions.py` (first-class), `extract/images_ocr.py` (loop N; PaddleOCR + VLM fallback), `extract/links.py` (trafilatura, credential-less, private-IP block) — invoked by `extract/router.py` as **deterministic pipeline code**, not agent tools.
+- [ ] `agents/interpreter.py` — full implementation: sanitized text → classify + summarize + tags + candidate action items (strict `Interpretation` schema, reasoning on); deterministic writer consumes the validated record → `Note`.
 - [ ] *Done = a real carousel and a real link post become good notes; caption analyzed.*
 
 ## F4 — Reels / video STT `[M]`  dep: F3
@@ -55,8 +55,8 @@ Phased, checkbox tasks for Claude Code. Ship each phase before the next. ⭐ = s
 
 ## Guardrails (check every phase)
 - [ ] No `instagrapi`; account code is read-only, weekly, one session, 429 back-off.
-- [ ] Rule-of-Two intact; reader has no secrets/side-effecting tools.
-- [ ] No shell/code tool; writes gated with `requires_confirmation`.
-- [ ] PII + injection neutralized in tests; egress allowlist on.
+- [ ] Rule-of-Two intact: the interpreter (the only model reading untrusted text) has no tools, no secrets; no other model sees untrusted text.
+- [ ] No shell/code tool; no agent-held write tools; writes are deterministic code on schema-validated records.
+- [ ] PII + injection neutralized in tests on the LLM-bound path (vault verbatim); fetcher egress policy on.
 - [ ] `core.run()` callable by a future agent; no CLI-only logic.
 - [ ] Idempotent writes; captions populated; skips logged.

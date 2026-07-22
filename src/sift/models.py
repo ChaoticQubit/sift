@@ -1,4 +1,4 @@
-"""Core data contracts. Keep stable — the fold-in seam (CLAUDE.md rule 6)."""
+"""Core data contracts. Keep stable — the fold-in seam (CLAUDE.md Conventions)."""
 from __future__ import annotations
 
 from datetime import date
@@ -52,13 +52,22 @@ class ActionItem(BaseModel):
     status: str = "pending"  # pending | confirmed | dismissed
 
 
-class Note(BaseModel):
-    item: Item
-    extraction: Extraction
+class Interpretation(BaseModel):
+    """The interpreter agent's ONLY output — strict schema, validated before any code acts on it.
+
+    This is the trust boundary between the quarantined model and privileged code (AGENTS.md §2).
+    """
+
     classification: str = "reference"  # educational | reference | entertainment
     summary: str = ""
     tags: list[str] = []
     action_items: list[ActionItem] = []
+
+
+class Note(BaseModel):
+    item: Item
+    extraction: Extraction
+    interpretation: Interpretation = Interpretation()
 
 
 class RunReport(BaseModel):

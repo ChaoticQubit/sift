@@ -10,5 +10,5 @@ from ..models import Extraction, Item
 
 
 def extract(item: Item, settings: Settings) -> Extraction:
-    """TODO F2: for each media file -> OCR -> concat raw + cleaned text; VLM fallback hook."""
-    raise NotImplementedError("F2: carousel/image OCR")
+    """TODO F3: for each media file -> OCR -> concat raw + cleaned text; VLM fallback hook."""
+    raise NotImplementedError("F3: carousel/image OCR")

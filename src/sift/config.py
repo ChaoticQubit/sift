@@ -10,14 +10,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SIFT_", env_file=".env", extra="ignore")
 
     vault_path: Path
-    work_dir: Path = Path(".sift")
-
-    # Agno storage (sessions + memory). SQLite local; Postgres is the upgrade path.
-    db_url: str = "sqlite:///.sift/sift.db"
+    # State (SQLite + LanceDB + dedup ledger) lives WITH the data: <vault>/.sift by default.
+    work_dir: Path | None = None
+    db_url: str | None = None  # Agno storage; SQLite local, Postgres is the upgrade path.
 
     # Models (provider-swappable; can be local)
     llm_provider: str = "anthropic"
-    llm_model: str = "claude-sonnet-4-5"
+    llm_model: str = "claude-sonnet-4-6"
     embed_provider: str = "openai"
     embed_model: str = "text-embedding-3-small"
 
@@ -25,10 +24,17 @@ class Settings(BaseSettings):
     cookie_browser: str = "chrome"  # gallery-dl --cookies-from-browser
     fetch_cadence: str = "weekly"   # weekly (default) | daily (ceiling). NEVER hourly.
 
-    # Feature flags. instagrapi stays OFF and unused — it is a banned dependency (CLAUDE.md rule 1).
-    enable_instagrapi: bool = False
+    # Feature flags (deferred features stay off; instagrapi has NO flag — banned outright, CLAUDE.md rule 1)
     enable_frame_ocr: bool = False
     enable_translation: bool = False
+
+    @property
+    def resolved_work_dir(self) -> Path:
+        return self.work_dir or self.vault_path / ".sift"
+
+    @property
+    def resolved_db_url(self) -> str:
+        return self.db_url or f"sqlite:///{self.resolved_work_dir / 'sift.db'}"
 
 
 def load_settings() -> "Settings":
