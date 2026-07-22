@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.sift/
+vault/media/
+*.lance
+.DS_Store
+dist/
+build/
+*.egg-info/
