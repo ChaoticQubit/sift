@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -19,6 +20,16 @@ DECODED_CAPTION = "It’s the best desk setup \U0001f36a — café vibes"
 def _pull(settings, path):
     report = RunReport()
     return dyi_export.pull(settings, str(path), report), report
+
+
+def _self_export(tmp_path, messages, participants=None, name="instagram-crafted"):
+    """An extracted-directory export containing only a self thread."""
+    root = tmp_path / name
+    thread = root / "your_instagram_activity/messages/inbox/self_notes"
+    thread.mkdir(parents=True)
+    body = {"participants": participants or [{"name": "Me"}], "messages": messages}
+    (thread / "message_1.json").write_text(json.dumps(body))
+    return root
 
 
 def test_parse_counts(settings, dyi_zip):
@@ -85,6 +96,141 @@ def test_extracted_directory_accepted(settings, dyi_zip, tmp_path):
     items, _ = _pull(settings, dest)
     assert len(items) == 6
     assert all(i.source_export == "instagram-fake-2026-07-20" for i in items)
+
+
+def test_duplicated_participant_self_thread_ingested(settings, tmp_path):
+    """Real exports have also listed the self thread's one name TWICE; both shapes
+    must ingest (finding: entire self-DM history silently dropped otherwise)."""
+    root = _self_export(
+        tmp_path,
+        [{"sender_name": "Fake Me", "timestamp_ms": 1721260800000, "content": "note"}],
+        participants=[{"name": "Fake Me"}, {"name": "Fake Me"}],
+    )
+    items, report = _pull(settings, root)
+    assert [i.caption for i in items] == ["note"]
+    assert not any("no self-DMs" in e for e in report.errors)
+
+
+def test_zero_self_dms_logged_and_counted(settings, tmp_path):
+    # inbox present but no thread matches the note-to-self shape
+    root = _self_export(
+        tmp_path,
+        [{"sender_name": "Me", "timestamp_ms": 1, "content": "x"}],
+        participants=[{"name": "Me"}, {"name": "Friend"}],
+    )
+    items, report = _pull(settings, root)
+    assert items == []
+    assert any("no self-DMs ingested" in e for e in report.errors)
+    # inbox absent entirely
+    bare = tmp_path / "bare-export"
+    (bare / "your_instagram_activity").mkdir(parents=True)
+    items, report = _pull(settings, bare)
+    assert items == []
+    assert any("no self-DMs to ingest" in e for e in report.errors)
+
+
+def test_media_uri_traversal_refused(settings, tmp_path):
+    """Security regression: a '../' or absolute uri in an extracted-directory
+    export must never read a file outside the export root into the vault."""
+    secret = tmp_path / "SECRET.txt"
+    secret.write_bytes(b"outside-the-export")
+    root = _self_export(
+        tmp_path,
+        [
+            {
+                "sender_name": "Me",
+                "timestamp_ms": 1721300000000,
+                "photos": [{"uri": "../SECRET.txt"}, {"uri": str(secret)}],
+            }
+        ],
+    )
+    items, report = _pull(settings, root)
+    media_dir = settings.vault_path / "media"
+    assert not media_dir.exists() or not list(media_dir.iterdir())
+    assert report.media_missing == 2
+    assert sum("refused" in e for e in report.errors) == 2
+    assert len(items) == 1 and items[0].media_files == []  # counted, not dropped
+
+
+def test_media_uri_directory_or_dotdot_does_not_crash(settings, tmp_path):
+    """Security regression: a uri naming a directory (or ending in '..') must be
+    skipped-and-counted, not abort the whole ingest with IsADirectoryError."""
+    root = _self_export(
+        tmp_path,
+        [
+            {
+                "sender_name": "Me",
+                "timestamp_ms": 1721300000000,
+                "photos": [
+                    {"uri": "your_instagram_activity/messages/inbox/self_notes/photos"},
+                    {
+                        "uri": "your_instagram_activity/messages/inbox/self_notes/photos/.."
+                    },
+                ],
+            }
+        ],
+    )
+    photos = root / "your_instagram_activity/messages/inbox/self_notes/photos"
+    photos.mkdir()
+    (photos / "real.jpg").write_bytes(b"\xff\xd8")
+    items, report = _pull(settings, root)  # completes — no exception
+    assert report.media_missing == 2
+    assert len(items) == 1 and items[0].media_files == []
+
+
+def test_self_share_caption_wins_id_collision(settings, tmp_path, fake_model):
+    """Save + self-DM the same reel the same UTC day -> one id. The caption-bearing
+    DM share must be the occurrence the ledger keeps (captions are first-class)."""
+    link = "https://www.instagram.com/reel/SAMEDAY01/"
+    zp = tmp_path / "instagram-collide.zip"
+    with zipfile.ZipFile(zp, "w") as zf:
+        zf.writestr(
+            "your_instagram_activity/saved/saved_posts.json",
+            json.dumps(
+                {
+                    "saved_saved_media": [
+                        {
+                            "title": "poster",
+                            "string_map_data": {
+                                "Saved on": {"href": link, "timestamp": 1721001600}
+                            },
+                        }
+                    ]
+                }
+            ),
+        )
+        zf.writestr(
+            "your_instagram_activity/messages/inbox/self_notes/message_1.json",
+            json.dumps(
+                {
+                    "participants": [{"name": "Me"}],
+                    "messages": [
+                        {
+                            "sender_name": "Me",
+                            "timestamp_ms": 1721005200000,  # same UTC day
+                            "share": {"link": link, "share_text": "the real caption"},
+                        }
+                    ],
+                }
+            ),
+        )
+    items, _ = _pull(settings, zp)
+    assert len(items) == 2 and items[0].id == items[1].id
+    assert items[0].caption == "the real caption"  # DM share emitted first
+    report = core.run("dyi_export", settings, path=str(zp))
+    assert (report.written, report.skipped) == (1, 1)
+    note = frontmatter.loads(Path(report.notes[0]).read_text())
+    assert note["caption"] == "the real caption"
+
+
+def test_wrapped_zip_descends(settings, dyi_zip, tmp_path):
+    """A ZIP that wraps everything in one top-level folder still parses."""
+    wrapped = tmp_path / "wrapped.zip"
+    with zipfile.ZipFile(dyi_zip) as src, zipfile.ZipFile(wrapped, "w") as dst:
+        for info in src.infolist():
+            dst.writestr("wrapper/" + info.filename, src.read(info.filename))
+    items, _ = _pull(settings, wrapped)
+    assert len(items) == 6
 
 
 def test_html_export_refused(settings, tmp_path):

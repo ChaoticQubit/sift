@@ -7,8 +7,9 @@ Parses (JSON export shape only — see pull() for the HTML refusal):
     saved list genuinely carries no captions, so those items get caption="")
   - your_instagram_activity/saved/saved_collections.json (names -> saved_collection)
   - your_instagram_activity/messages/inbox/*/message_*.json — the note-to-self
-    thread is the one whose participants list has exactly ONE participant; shares
-    carry the caption in share_text, plain text messages become Medium.text notes.
+    thread is the one whose participants all share ONE name (real exports show
+    both a single entry and the same name duplicated); shares carry the caption
+    in share_text, plain text messages become Medium.text notes.
 
 Mojibake: Meta double-encodes non-ASCII (UTF-8 bytes escaped as latin-1 code
 points, e.g. "\\u00e2\\u0080\\u0099" for a right quote). Every string is repaired
@@ -24,10 +25,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import zipfile
 from collections import Counter
 from datetime import date, datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..config import Settings
 from ..models import IngestVia, Item, Medium, RunReport
@@ -148,12 +150,17 @@ def _collection_map(root: _Root) -> dict[str, str]:
     return mapping
 
 
-def _self_thread_files(root: _Root) -> list[_Root]:
-    """message_*.json files of every thread with exactly ONE participant — that is
-    how the note-to-self thread appears in real exports."""
+def _self_thread_files(root: _Root, report: RunReport) -> list[_Root]:
+    """message_*.json files of the note-to-self thread: every participant entry
+    shares one name. Real exports have shown BOTH a single participant entry and
+    the same name listed twice, so match on distinct names, not entry count.
+    Self-DMs are a headline deliverable: finding none is always logged-and-counted,
+    never a silent empty result."""
     inbox = root / _INBOX
     if not inbox.exists():
-        logger.warning("dyi_export: no %s in export; no self-DMs to ingest", _INBOX)
+        msg = f"no {_INBOX} in export; no self-DMs to ingest"
+        logger.warning("dyi_export: %s", msg)
+        report.errors.append(f"dyi_export: {msg}")
         return []
     out: list[_Root] = []
     for thread in sorted(inbox.iterdir(), key=lambda p: p.name):
@@ -167,33 +174,73 @@ def _self_thread_files(root: _Root) -> list[_Root]:
             ),
             key=lambda p: p.name,
         )
-        if files and len(_load_json(files[0]).get("participants", [])) == 1:
-            out.extend(files)
+        if files:
+            names = {
+                p.get("name") for p in _load_json(files[0]).get("participants", [])
+            }
+            if len(names) == 1:
+                out.extend(files)
+    if not out:
+        msg = "inbox present but no note-to-self thread matched; no self-DMs ingested"
+        logger.warning("dyi_export: %s", msg)
+        report.errors.append(f"dyi_export: {msg}")
     return out
 
 
+def _uri_safe(root: _Root, uri: str) -> bool:
+    """Trust boundary (exempt from simplification — CLAUDE.md gate 5): the uri comes
+    from untrusted export JSON. Reject absolute paths and `..` segments; in
+    extracted-directory mode also require the resolved path (symlinks included)
+    to stay inside the export root."""
+    pure = PurePosixPath(uri)
+    if pure.is_absolute() or ".." in pure.parts or not pure.name:
+        return False
+    if isinstance(root, Path):
+        return (root / uri).resolve().is_relative_to(root.resolve())
+    return True  # zipfile.Path: membership is name-matched against the archive list
+
+
 def _copy_media(
-    root: _Root, uris: list[str], settings: Settings, counts: Counter
+    root: _Root, uris: list[str], settings: Settings, counts: Counter, report: RunReport
 ) -> list[str]:
-    """Copy attachments that exist in the export into <vault>/media/; count the rest."""
+    """Copy attachments that exist in the export into <vault>/media/; every
+    rejected, missing, or non-file uri is logged and counted, never fatal."""
     copied: list[str] = []
     for uri in uris:
+        name = re.sub(r"[^\w. -]", "_", PurePosixPath(uri).name).lstrip(".")
+        if not _uri_safe(root, uri) or not name or len(name) > 255:
+            counts["media_missing"] += 1
+            msg = f"media uri {uri!r} refused (escapes export root or bad name); permalink-only"
+            logger.warning("dyi_export: %s", msg)
+            report.errors.append(f"dyi_export: {msg}")
+            continue
         member = root / uri
         if not member.exists():
             counts["media_missing"] += 1
             logger.warning("dyi_export: media %s not in export; permalink-only", uri)
             continue
+        if not member.is_file():
+            counts["media_missing"] += 1
+            msg = f"media uri {uri!r} is not a regular file; skipped"
+            logger.warning("dyi_export: %s", msg)
+            report.errors.append(f"dyi_export: {msg}")
+            continue
         media_dir = settings.vault_path / "media"
         media_dir.mkdir(parents=True, exist_ok=True)
         # ponytail: basename collision across threads overwrites; hash-prefix if it bites
-        dest = media_dir / Path(uri).name
+        dest = media_dir / name
         dest.write_bytes(member.read_bytes())
         copied.append(f"media/{dest.name}")
     return copied
 
 
 def _message_item(
-    msg: dict, root: _Root, settings: Settings, source_export: str, counts: Counter
+    msg: dict,
+    root: _Root,
+    settings: Settings,
+    source_export: str,
+    counts: Counter,
+    report: RunReport,
 ) -> Item | None:
     ts_ms = msg.get("timestamp_ms")
     when = _utc_date(ts_ms / 1000) if ts_ms else None
@@ -219,7 +266,7 @@ def _message_item(
             id=_item_id(uris[0], str(ts_ms)),
             medium=Medium.video if msg.get("videos") else Medium.image,
             caption=msg.get("content") or "",
-            media_files=_copy_media(root, uris, settings, counts),
+            media_files=_copy_media(root, uris, settings, counts, report),
             **common,
         )
     if msg.get("content"):
@@ -261,10 +308,20 @@ def pull(
     source_export = p.name if p.is_dir() else p.stem  # e.g. "instagram-2026-07-20"
     counts: Counter = Counter()
 
-    items = _saved_items(root, source_export, counts, report)
-    for f in _self_thread_files(root):
+    # Self-thread items FIRST: a self-DM share and a saved entry of the same
+    # permalink on the same UTC day share one id, and the ledger keeps the first
+    # occurrence — the DM share carries the caption, the saved list never does.
+    items: list[Item] = []
+    for f in _self_thread_files(root, report):
         for msg in _load_json(f).get("messages", []):
-            item = _message_item(msg, root, settings, source_export, counts)
+            try:
+                item = _message_item(msg, root, settings, source_export, counts, report)
+            except Exception as exc:  # one crafted entry must not kill the run
+                counts["skipped_entries"] += 1
+                note = f"unparseable self-thread message ({exc!r}); entry skipped"
+                logger.warning("dyi_export: %s", note)
+                report.errors.append(f"dyi_export: {note}")
+                continue
             if item is None:
                 counts["skipped_entries"] += 1
                 note = "self-thread message with no share/text/media; entry skipped"
@@ -272,6 +329,7 @@ def pull(
                 report.errors.append(f"dyi_export: {note}")
             else:
                 items.append(item)
+    items.extend(_saved_items(root, source_export, counts, report))
 
     report.media_missing += counts["media_missing"]
     logger.info(
