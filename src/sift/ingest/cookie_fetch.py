@@ -8,10 +8,12 @@ No instagrapi — this uses the user's real logged-in web session via gallery-dl
 from __future__ import annotations
 
 from ..config import Settings
-from ..models import Item
+from ..models import Item, RunReport
 
 
-def pull(settings: Settings, path: str | None = None) -> list[Item]:
+def pull(
+    settings: Settings, path: str | None = None, report: RunReport | None = None
+) -> list[Item]:
     """Incremental gallery-dl fetch of the Saved folder -> Items (with captions).
 
     TODO F2:
