@@ -6,5 +6,8 @@ from ..models import Extraction, Item
 
 
 def extract(item: Item, settings: Settings) -> Extraction:
-    """TODO F2: resolve URL -> trafilatura -> title + readable text + metadata."""
-    raise NotImplementedError("F2: link extraction")
+    """TODO F3: resolve URL -> trafilatura -> title + readable text + metadata.
+
+    Credential-less fetch + private-IP block via guardrails.egress (AGENTS.md §3a).
+    """
+    raise NotImplementedError("F3: link extraction")

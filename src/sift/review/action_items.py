@@ -6,5 +6,5 @@ from ..models import ActionItem
 
 
 def collect(settings: Settings) -> list[ActionItem]:
-    """TODO F5: gather candidates across notes; dateparser-normalize dues; score confidence."""
-    raise NotImplementedError("F5: collect action items")
+    """TODO F6: gather candidates across notes (dues already typed dates via the schema)."""
+    raise NotImplementedError("F6: collect action items")

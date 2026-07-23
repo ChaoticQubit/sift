@@ -4,16 +4,14 @@
 
 Sift ingests everything you've saved or DM'd to yourself on Instagram — reels, image carousels, videos, links, in any language — and turns it into a **local Obsidian markdown vault** you can actually search, with a **draft-then-approve digest** of anything time-sensitive (deadlines, applications) you might have missed.
 
-It runs **entirely from Instagram's official data export** — no scraping, no logging into your account, no ban risk.
-
 > Working name; rename freely. Personal / local-first tool. Not a product.
 
 ## What it does
 
-1. **Ingest** — parse Meta's "Download Your Information" export (your Saved posts + self-DM thread).
-2. **Fetch** — download public post media by permalink (`gallery-dl` / `yt-dlp`, no login).
-3. **Extract** — OCR image carousels, speech-to-text reels/videos (via `freeflow`), pull readable content from links.
-4. **Organize** — classify + summarize each item into an Obsidian-compatible markdown note.
+1. **Ingest** — three adapters (`docs/DESIGN.md` §4): parse Meta's official "Download Your Information" export (backfill + self-DMs, zero risk); a weekly read-only cookie-based fetch of your Saved folder (`gallery-dl`, your machine + home IP, low but non-zero risk); a share-sheet capture for new items (zero risk). No `instagrapi`, no mobile private API, ever.
+2. **Extract** — the **caption first** (richest signal), then OCR image carousels, speech-to-text reels/videos, readable content from links. All deterministic code.
+3. **Interpret** — one quarantined, tool-less Agno agent turns the untrusted text into a strict typed record (classification, summary, tags, action candidates). See `docs/AGENTS.md`.
+4. **File** — each item becomes an Obsidian-compatible markdown note (verbatim caption preserved).
 5. **Search** — local RAG index; `sift search "what was that recipe"`.
 6. **Review** — a digest of candidate deadlines/applications you confirm — nothing fires on its own.
 
@@ -23,7 +21,7 @@ No existing tool does deep multimodal Instagram extraction **into your own local
 
 ## Status
 
-Pre-build, Claude-Code-ready. Read **`docs/DESIGN.md`** (product doc / source of truth) and **`CLAUDE.md`** (dev contract), then start at **F0** in `docs/BUILD_CHECKLIST.md`.
+Pre-build. Read **`docs/DESIGN.md`** (product doc / source of truth) and **`CLAUDE.md`** (dev contract), then start at **F0** in `docs/BUILD_CHECKLIST.md`.
 
 ## Quickstart (once built)
 
@@ -33,16 +31,18 @@ pip install -e ".[dev]"
 cp .env.example .env          # set SIFT_VAULT_PATH, model provider/keys
 # needs ffmpeg, gallery-dl, yt-dlp on PATH
 
-sift run ~/Downloads/instagram-export.zip   # ingest + process
+sift run --source dyi_export --path ~/Downloads/instagram-export.zip   # backfill
+sift run --source cookie_fetch                                         # weekly sync
 sift search "brown butter recipe"
 ```
 
 ## Design decisions (the short version)
 
-- **Official export, not `instagrapi`.** The private-API path risks a permanent ban on your main account; the DYI export contains the same data at zero risk. See `docs/DESIGN.md` §4.
+- **Hybrid ingestion, never the private API.** The official export + a low-cadence read-only cookie fetch + a share-sheet. `instagrapi` is banned — permanent-ban risk on a main account. See `docs/DESIGN.md` §4.
+- **Rule of Two, enforced structurally.** The only model that reads untrusted captions/links has no tools and no secrets; everything with capability is deterministic code on schema-validated records. See `docs/AGENTS.md` §2.
 - **Fold-ready.** Built as one callable core module writing Life-Planner-compatible notes, so it can later become a background agent inside the "second brain that acts."
 - **Draft-then-approve.** Action items are proposed, never auto-fired.
 
 ## Roadmap
 
-`docs/BUILD_CHECKLIST.md` — F0 foundation → F1 ingest → F2 carousels+links → F3 reels STT → F4 RAG → F5 action review. Deferred: frame OCR, non-English translation, Data Portability API pull, Life Planner fold-in.
+`docs/BUILD_CHECKLIST.md` — F0 foundation → F0.5 guardrail harness → F1 export ingest → F2 cookie fetch → F3 extract+interpret → F4 reels STT → F5 RAG search → F6 action review → F7 share capture. Deferred: frame OCR, non-English translation, auto-linking, Data Portability API, Life Planner fold-in.

@@ -5,23 +5,20 @@ description = "Turn your Instagram saves into a searchable local second brain (A
 requires-python = ">=3.11"
 dependencies = [
   "agno>=2.7,<3",             # PIN v2 — v1 tutorials are stale (breaking rewrite)
-  "lancedb>=0.9",             # Agno Knowledge / RAG (local, embedded)
-  "presidio-analyzer>=2.2",   # PII guardrail (real recall)
-  "presidio-anonymizer>=2.2",
-  "llm-guard>=0.3",           # output-side PII + malicious-URL scanning
   "gallery-dl>=1.27",         # cookie_fetch: saved-folder + captions
   "yt-dlp>=2024.8.6",
   "trafilatura>=1.9",         # links
-  "dateparser>=1.2",          # action-item dates
-  "faster-whisper>=1.0",      # reels STT (with freeflow)
   "typer>=0.12",
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
   "python-frontmatter>=1.1",
-  # OCR: add paddleocr and/or a vision-LLM client in F3
 ]
 
 [project.optional-dependencies]
+# Heavy deps live in extras so F0 installs stay light — add per phase (BUILD_CHECKLIST.md).
+# Guardrails need no extra: Agno built-ins + stdlib (Presidio/LLM Guard cut — AGENTS.md §3).
+stt = ["faster-whisper>=1.0"] # F4: reels STT (with freeflow)
+rag = ["lancedb>=0.9"]        # F5: Agno Knowledge / RAG (local, embedded)
 dev = ["pytest>=8", "ruff>=0.5", "black>=24.4"]
 
 [project.scripts]

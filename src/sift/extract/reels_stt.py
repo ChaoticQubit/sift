@@ -10,5 +10,5 @@ from ..models import Extraction, Item
 
 
 def extract(item: Item, settings: Settings) -> Extraction:
-    """TODO F3: ffmpeg extract audio -> STT -> transcript + languages + confidence."""
-    raise NotImplementedError("F3: reel/video STT")
+    """TODO F4: ffmpeg extract audio -> STT -> transcript + languages + confidence."""
+    raise NotImplementedError("F4: reel/video STT")

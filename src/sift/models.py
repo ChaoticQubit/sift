@@ -1,10 +1,11 @@
-"""Core data contracts. Keep stable — the fold-in seam (CLAUDE.md rule 6)."""
+"""Core data contracts. Keep stable — the fold-in seam (CLAUDE.md Conventions)."""
 from __future__ import annotations
 
 from datetime import date
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Medium(str, Enum):
@@ -45,20 +46,37 @@ class Extraction(BaseModel):
     artifacts: dict = {}
 
 
+class Classification(str, Enum):
+    educational = "educational"
+    reference = "reference"
+    entertainment = "entertainment"
+
+
 class ActionItem(BaseModel):
     text: str
     due: date | None = None
-    confidence: float = 0.0
-    status: str = "pending"  # pending | confirmed | dismissed
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    status: Literal["pending", "confirmed", "dismissed"] = "pending"
+
+
+class Interpretation(BaseModel):
+    """The interpreter agent's ONLY output — strict schema, validated before any code acts on it.
+
+    This is the trust boundary between the quarantined model and privileged code (AGENTS.md §2).
+    Schema validates SHAPE, not honesty: boundary code still re-forces status to "pending" on
+    every model-emitted action item and treats all values as proposals.
+    """
+
+    classification: Classification = Classification.reference
+    summary: str = ""
+    tags: list[str] = []
+    action_items: list[ActionItem] = []
 
 
 class Note(BaseModel):
     item: Item
     extraction: Extraction
-    classification: str = "reference"  # educational | reference | entertainment
-    summary: str = ""
-    tags: list[str] = []
-    action_items: list[ActionItem] = []
+    interpretation: Interpretation = Interpretation()
 
 
 class RunReport(BaseModel):
