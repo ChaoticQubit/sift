@@ -24,7 +24,7 @@ Phased, checkbox tasks for Claude Code. Ship each phase before the next. ⭐ = s
 - [ ] ⭐ **Guardrail tests:** a caption containing an injection payload + a fake SSN/email is masked on the model-bound path (vault copy verbatim), off-schema interpreter output is rejected, and a schema-valid record claiming `status: confirmed` comes out `pending`. *Done.* See `AGENTS.md`.
 
 ## F1 — Ingest: DYI export + captions `[M]`  dep: F0
-- [ ] `ingest/dyi_export.py` — parse ZIP: saved posts, saved collections (names), self-DM/note-to-self thread, **captions**. JSON + HTML shapes. Stable `Item.id`.
+- [ ] `ingest/dyi_export.py` — parse ZIP: saved posts, saved collections (names), self-DM/note-to-self thread, **captions**. JSON shape; an HTML-format export is refused loudly with re-request-as-JSON guidance (DESIGN §17). Stable `Item.id`.
 - [ ] Wire into `core.run(source="dyi_export", path=...)`. *Done = your export backfills notes; captions populated; self-DMs included.*
 
 ## F2 — Ingest: cookie_fetch + captions `[L]`  dep: F1

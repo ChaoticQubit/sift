@@ -286,6 +286,7 @@ You run your export **and** a scheduled `cookie_fetch` through it; your backlog 
 | DB tech | SQLite (ledger) + LanceDB (RAG) | PgVector upgrade path |
 | Recurring ingest | `cookie_fetch` weekly, read-only | daily ceiling; never hourly |
 | DMs / backfill | `dyi_export` (occasional) | only safe DM route |
+| DYI export format | **JSON only** — an HTML-format export is refused loudly with re-request-as-JSON guidance | decided 2026-07-23 — narrows checklist F1's "JSON + HTML shapes"; the export UI offers JSON, so an HTML parser is built only if a JSON export is ever genuinely unavailable |
 | New items | `share_capture` share-sheet | zero-risk end state |
 | Data Portability API | Deferred | registry-gated; no DM data type; US-uncertain |
 | LLM provider | Claude, swappable (local optional) | strict schema |

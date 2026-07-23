@@ -1,10 +1,22 @@
 # Test fixtures
 
-Drop a **tiny fake DYI export** here for offline development (F0/F1):
+A **tiny fake DYI export** mirroring the real ZIP layout (F1):
 
-- `saved_posts.json` — a couple of fake saved permalinks + timestamps
-- `messages/inbox/<self>/message_1.json` — a fake self-thread with 1–2 shared posts
-- `sample_image.jpg`, `sample_clip.mp4` — tiny sample media (arrive with the phase
-  that reads them, F1+; F0 keeps this dir JSON-only — no binary files in the repo)
+- `your_instagram_activity/saved/saved_posts.json` — real export shape
+  (`saved_saved_media` + `string_map_data`), incl. a mojibake title and one
+  malformed entry (skipped + counted, never silently dropped)
+- `your_instagram_activity/saved/saved_collections.json` — collection name
+  (mojibake emoji) mapped onto one saved post
+- `your_instagram_activity/messages/inbox/self_notes/` — the note-to-self thread
+  (one participant name — real exports also duplicate it; both shapes match): a
+  shared reel with `share_text` caption, a plain
+  text note, one photo attachment present in the zip and one missing
+- `your_instagram_activity/messages/inbox/groupchat_decoy/` — 3 participants;
+  must be ignored
+
+Mojibake strings are checked in exactly as Meta emits them (UTF-8 bytes
+escaped as latin-1 code points — includes invisible C1 controls; don't "fix"
+them in an editor). The `dyi_zip` conftest fixture assembles this tree into a
+ZIP at test time and injects the one present media file (no binaries in repo).
 
 No test may hit Instagram or a paid API. Keep everything here small and synthetic.

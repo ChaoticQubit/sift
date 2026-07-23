@@ -1,0 +1,33 @@
+{
+  "participants": [{"name": "Fake Me"}],
+  "messages": [
+    {
+      "sender_name": "Fake Me",
+      "timestamp_ms": 1721174400000,
+      "share": {
+        "link": "https://www.instagram.com/reel/FAKESELF03/",
+        "share_text": "Itâs the best desk setup ðª â cafÃ© vibes",
+        "original_content_owner": "fake_design"
+      }
+    },
+    {
+      "sender_name": "Fake Me",
+      "timestamp_ms": 1721260800000,
+      "content": "remember: book flights before friday"
+    },
+    {
+      "sender_name": "Fake Me",
+      "timestamp_ms": 1721300000000,
+      "photos": [
+        {"uri": "your_instagram_activity/messages/inbox/self_notes/photos/photo_present.jpg"}
+      ]
+    },
+    {
+      "sender_name": "Fake Me",
+      "timestamp_ms": 1721300100000,
+      "photos": [
+        {"uri": "your_instagram_activity/messages/inbox/self_notes/photos/photo_missing.jpg"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "participants": [{"name": "Fake Me"}, {"name": "Friend A"}, {"name": "Friend B"}],
+  "messages": [
+    {
+      "sender_name": "Friend A",
+      "timestamp_ms": 1721174500000,
+      "share": {
+        "link": "https://www.instagram.com/p/GROUPDECOY99/",
+        "share_text": "group chat share that must NOT be ingested",
+        "original_content_owner": "fake_memes"
+      }
+    },
+    {
+      "sender_name": "Fake Me",
+      "timestamp_ms": 1721174600000,
+      "content": "group chat text that must NOT be ingested"
+    }
+  ]
+}

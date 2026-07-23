@@ -43,7 +43,9 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
         )
 
     report = RunReport()
-    for item in adapters[source].pull(settings, path):
+    # Adapters count their own skips/missing-media into the report (log-and-count,
+    # never silent drops — CLAUDE.md Conventions).
+    for item in adapters[source].pull(settings, path, report):
         report.processed += 1
         if not storage.is_new(item.id, settings):
             report.skipped += 1

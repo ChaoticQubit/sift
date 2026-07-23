@@ -6,10 +6,12 @@ Replaces the 'DM myself' habit: user taps Share -> Sift, item lands instantly. S
 from __future__ import annotations
 
 from ..config import Settings
-from ..models import Item
+from ..models import Item, RunReport
 
 
-def pull(settings: Settings, path: str | None = None) -> list[Item]:
+def pull(
+    settings: Settings, path: str | None = None, report: RunReport | None = None
+) -> list[Item]:
     """Drain the capture endpoint's inbox -> Items (with captions). ingest_via=share_capture.
 
     TODO F7: a small local endpoint receives shared posts + typed notes from an iOS/Android
