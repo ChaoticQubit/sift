@@ -21,11 +21,11 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
     instagrapi; account code read-only; Rule of Two structural (only the interpreter
     sees untrusted text, and it has no tools); idempotent.
 
-    NOTE (F0): the quarantined interpreter arrives with F0.5/F3; until then every note
-    carries a default Interpretation() (classification=reference, no summary/tags/action
-    items). Extractors that are not built yet are logged and the item still gets a
-    caption-only note — never silently dropped (CLAUDE.md Conventions).
+    Off-schema or failed interpreter output is logged, counted as a guardrail block,
+    and the item falls back to a default Interpretation() — it still gets a note,
+    never silently dropped (CLAUDE.md Conventions).
     """
+    from .agents import interpreter
     from .db import storage
     from .extract import router
     from .ingest import cookie_fetch, dyi_export, share_capture
@@ -56,8 +56,15 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
             logger.warning(msg)
             report.errors.append(msg)
             extraction = Extraction(text=item.caption)
-        # Interpreter is F0.5/F3 — default Interpretation() until then (see docstring).
-        note = Note(item=item, extraction=extraction, interpretation=Interpretation())
+        try:
+            interpretation = interpreter.interpret(item, extraction, settings)
+        except interpreter.InterpretationError as exc:
+            msg = f"{item.id}: interpreter output rejected ({exc}); default note"
+            logger.warning(msg)
+            report.errors.append(msg)
+            report.guardrail_blocks += 1
+            interpretation = Interpretation()
+        note = Note(item=item, extraction=extraction, interpretation=interpretation)
         report.notes.append(writer.write(note, settings))
         report.written += 1
 
