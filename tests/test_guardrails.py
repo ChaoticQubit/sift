@@ -26,9 +26,17 @@ from sift.models import ActionItem, IngestVia, Interpretation, Item, Medium
 # ---------------------------------------------------------------- sanitize / spotlight
 
 
-def test_sanitize_strips_invisible_chars():
-    hidden = "do\U000e0041this​‍⁠﻿ now"
-    assert sanitize_untrusted(hidden) == "dothis now"
+def test_sanitize_strips_tag_chars_only():
+    # Tag chars U+E0000-U+E007F stripped — the exact AGENTS.md §5 range.
+    assert sanitize_untrusted("do\U000e0041this now") == "dothis now"
+    # Regression: ZWJ emoji sequences and ZWNJ (Persian) must SURVIVE — the old
+    # over-broad regex stripped U+200B-U+200F/U+2060/U+FEFF and mangled them.
+    family = "\U0001f468\u200d\U0001f469\u200d\U0001f467"  # ZWJ family emoji
+    assert sanitize_untrusted(family) == family
+    persian = "می\u200cخواهم"  # ZWNJ orthographic
+    assert sanitize_untrusted(persian) == persian
+    bidi = "a\u200eb\u200fc"  # LRM/RLM kept
+    assert sanitize_untrusted(bidi) == bidi
 
 
 def test_sanitize_neutralizes_markdown_and_whitespace():
@@ -48,9 +56,9 @@ def test_spotlight_random_labeled_delimiters():
 
 
 def test_untrusted_content_guardrail_rewrites_model_bound_input():
-    run_input = RunInput(input_content="hi​there ![x](http://e)")
+    run_input = RunInput(input_content="hi\U000e0041there ![x](http://e)")
     UntrustedContentGuardrail().check(run_input)
-    assert "​" not in run_input.input_content
+    assert "\U000e0041" not in run_input.input_content
     assert "![" not in run_input.input_content
     assert "UNTRUSTED-DATA-" in run_input.input_content
 
@@ -147,16 +155,29 @@ def test_confirmed_status_reforced_to_pending(settings, monkeypatch, fake_model)
     assert post["action_items"][0]["status"] == "pending"
 
 
-def test_confidence_clamped_on_dict_output(settings, fake_model):
-    fake_model.result = {
-        "classification": "educational",
-        "summary": "s",
-        "tags": [],
-        "action_items": [{"text": "do", "confidence": 7.5, "status": "confirmed"}],
-    }
+def test_confidence_clamped_not_rejected_on_real_parse_path(settings, fake_model):
+    # Regression: with output_schema=Interpretation, agno 2.8 parses the model's JSON
+    # via pydantic itself — an out-of-range confidence must CLAMP inside that parse
+    # (ActionItem's before-validator), not fail ge/le and degrade the whole record to
+    # a raw string that _validated then rejects (clamp, not reject — AGENTS.md §2).
+    raw = (
+        '{"classification": "educational", "summary": "s", "tags": [],'
+        ' "action_items": [{"text": "do", "confidence": 7.5, "status": "confirmed"}]}'
+    )
+    fake_model.result = Interpretation.model_validate_json(raw)  # agno's parse shape
     out = interpreter.interpret(_item("c", "caption"), _extraction("caption"), settings)
+    assert out.classification.value == "educational"  # record survives intact
     assert out.action_items[0].confidence == 1.0
     assert out.action_items[0].status == "pending"
+
+
+def test_confidence_clamp_shapes():
+    assert ActionItem(text="a", confidence=-0.5).confidence == 0.0
+    assert (
+        ActionItem.model_validate({"text": "a", "confidence": "7.5"}).confidence == 1.0
+    )
+    with pytest.raises(Exception):  # non-numeric still rejected, not silently defaulted
+        ActionItem(text="a", confidence="high")
 
 
 def test_empty_text_skips_model_call(settings, fake_model):
@@ -177,6 +198,9 @@ _PRIVATE_URLS = [
     "http://[fe80::1]/",
     "http://[fc00::1]/",
     "http://[::ffff:127.0.0.1]/",  # mapped form
+    "http://[64:ff9b::a9fe:a9fe]/",  # NAT64 well-known prefix -> 169.254.169.254
+    "http://[64:ff9b::7f00:1]/",  # NAT64 -> 127.0.0.1
+    "http://[::127.0.0.1]/",  # deprecated IPv4-compatible -> loopback
     "http://0x7f000001/",  # encoded loopback (canonicalized by getaddrinfo)
 ]
 
@@ -186,6 +210,13 @@ def test_private_urls_rejected(url):
     assert not egress.is_public_url(url)
     with pytest.raises(egress.EgressError):
         egress.guarded_fetch(url)
+
+
+def test_ipv6_embedded_ipv4_decoded_before_public_check():
+    # NAT64 embedding a PUBLIC IPv4 stays public (decode then judge, not blanket-block).
+    assert egress._is_public("64:ff9b::5db8:d822")  # -> 93.184.216.34
+    assert not egress._is_public("64:ff9b::c0a8:101")  # -> 192.168.1.1
+    assert not egress._is_public("::a9fe:a9fe")  # v4-compatible -> 169.254.169.254
 
 
 def test_scheme_and_credentials_rejected():
@@ -250,7 +281,9 @@ def test_interpreter_agent_is_quarantined(settings):
     assert not agent.tools  # NO tools
     assert agent.db is None  # NO session storage / memory
     assert agent.output_schema is Interpretation
-    assert len(agent.pre_hooks) == 3  # pii mask, untrusted-content, injection-flag
+    # ONLY the idempotent PII re-mask; sanitize/spotlight/injection-flag run once in
+    # interpret() — wiring them here too nested spotlight fences on the live path.
+    assert len(agent.pre_hooks) == 1
 
 
 # ----------------------------------------------------------------------------- helpers

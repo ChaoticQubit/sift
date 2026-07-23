@@ -17,9 +17,12 @@ from agno.run.team import TeamRunInput
 
 logger = logging.getLogger(__name__)
 
-# Unicode tag chars U+E0000-U+E007F (invisible instruction smuggling) + zero-width chars
-# U+200B-U+200F, U+2060 (word joiner), U+FEFF (BOM/ZWNBSP).
-_INVISIBLE = re.compile(r"[\U000E0000-\U000E007F​-‏⁠﻿]")
+# Unicode tag chars U+E0000-U+E007F only (invisible instruction smuggling) — the exact
+# range AGENTS.md §5 specifies. Deliberately NOT zero-width/bidi chars: U+200D (ZWJ) is
+# load-bearing in emoji sequences, U+200C (ZWNJ) is orthographic in Persian, and
+# U+200E/U+200F are legitimate in mixed-direction text; the interpreter is tool-less and
+# flagging is log-only, so stripping them loses content without adding protection.
+_INVISIBLE = re.compile(r"[\U000E0000-\U000E007F]")
 
 # ponytail: reuse the installed agno pattern list instead of maintaining our own.
 _PATTERNS: list[str] = PromptInjectionGuardrail().injection_patterns
@@ -28,7 +31,7 @@ _PATTERNS: list[str] = PromptInjectionGuardrail().injection_patterns
 def sanitize_untrusted(text: str) -> str:
     """Deterministic sanitize for any untrusted text before it nears a model (AGENTS.md §5).
 
-    Strips invisible tag/zero-width chars, neutralizes markdown image/link syntax
+    Strips Unicode tag chars U+E0000-U+E007F, neutralizes markdown image/link syntax
     (every byte stays as visible text — nothing renders or fires), normalizes whitespace.
     Pure function, usable outside hooks (the F3 vision-OCR output re-enters here).
     """

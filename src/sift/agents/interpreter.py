@@ -7,9 +7,11 @@ InterpretationError — core.run logs it and falls back to a default Interpretat
 item still gets a note, never dropped. Boundary code re-forces security-relevant values
 (status -> pending, confidence clamped) — the model proposes, deterministic code disposes.
 
-The pipeline sanitizes/masks/spotlights BEFORE the model call; the pre_hooks apply the
-same hardening inside agent.run as defense in depth (they don't run when tests mock the
-_run seam — which is exactly why the pipeline copy is the one tests assert on).
+The pipeline (interpret) is the SINGLE owner of untrusted-content hardening: it
+sanitizes, masks, spotlights, and injection-flags exactly once before the model call.
+The agent keeps only the PII pre_hook, which is idempotent on already-masked text —
+re-wrapping spotlight fences or double-logging injection hits in hooks would nest the
+fence and degrade the live prompt (decided F0.5).
 No API key is required at construction; the key is only needed when agent.run actually
 calls the model, which tests never do.
 """
@@ -23,13 +25,7 @@ from agno.models.anthropic import Claude
 from pydantic import ValidationError
 
 from ..config import Settings
-from ..guardrails.injection import (
-    InjectionFlagGuardrail,
-    UntrustedContentGuardrail,
-    flag_injection,
-    sanitize_untrusted,
-    spotlight,
-)
+from ..guardrails.injection import flag_injection, sanitize_untrusted, spotlight
 from ..guardrails.pii import mask_for_model, pii_guardrail
 from ..models import Extraction, Interpretation, Item
 
@@ -60,9 +56,10 @@ def build_agent(settings: Settings) -> Agent:
         output_schema=Interpretation,  # strict; off-schema output rejected
         instructions=_INSTRUCTIONS,
         pre_hooks=[
-            pii_guardrail(),  # masks the model-bound copy (vault stays verbatim)
-            UntrustedContentGuardrail(),
-            InjectionFlagGuardrail(),  # log-only, never blocks
+            # Idempotent re-mask of the model-bound copy (vault stays verbatim).
+            # Sanitize/spotlight/injection-flag run ONCE in interpret() — wiring them
+            # here too would nest spotlight fences and double-log every hit.
+            pii_guardrail(),
         ],
     )
 
@@ -73,13 +70,13 @@ def _run(agent: Agent, prompt: str) -> object:
 
 
 def _validated(content: object) -> Interpretation:
-    """Schema-validate model output; clamp confidence; re-force action-item status."""
-    if isinstance(content, dict):
-        for ai in content.get("action_items") or []:
-            if isinstance(ai, dict) and isinstance(ai.get("confidence"), (int, float)):
-                ai["confidence"] = min(
-                    1.0, max(0.0, ai["confidence"])
-                )  # clamp, not reject
+    """Schema-validate model output; re-force action-item status.
+
+    Confidence clamping lives in ActionItem's before-validator (models.py), so it runs
+    wherever parsing actually happens — agno's internal output_schema parse hands us an
+    Interpretation instance or a raw string, never a dict, so clamping here would be
+    dead code on the real path.
+    """
     try:
         interp = (
             content

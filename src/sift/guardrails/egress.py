@@ -28,6 +28,16 @@ import urllib3
 _MAX_REDIRECTS = 5
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
+# IPv6 prefixes whose last 32 bits embed the REAL IPv4 destination: the NAT64
+# well-known prefix (RFC 6052 — a local DNS64/NAT64 gateway translates these to the
+# embedded IPv4, so 64:ff9b::a9fe:a9fe reaches 169.254.169.254) and the deprecated
+# IPv4-compatible ::a.b.c.d range. Python's is_global is True for both wrappers, so
+# they must be decoded before the public check, like ipv4_mapped already is.
+_EMBEDDED_V4_PREFIXES = (
+    ipaddress.ip_network("64:ff9b::/96"),  # NAT64 well-known prefix
+    ipaddress.ip_network("::/96"),  # deprecated IPv4-compatible ::a.b.c.d
+)
+
 
 class EgressError(Exception):
     """A fetch was refused by the SSRF egress policy."""
@@ -35,9 +45,13 @@ class EgressError(Exception):
 
 def _is_public(ip: str) -> bool:
     addr = ipaddress.ip_address(ip)
-    # ::ffff:10.0.0.1 and friends: judge the mapped IPv4, not the IPv6 wrapper.
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-        addr = addr.ipv4_mapped
+    if isinstance(addr, ipaddress.IPv6Address):
+        # ::ffff:10.0.0.1, 64:ff9b::7f00:1, ::127.0.0.1: judge the embedded IPv4
+        # destination, not the IPv6 wrapper.
+        if addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+        elif any(addr in net for net in _EMBEDDED_V4_PREFIXES):
+            addr = ipaddress.IPv4Address(int(addr) & 0xFFFF_FFFF)
     # is_global is False for private, loopback, link-local, unspecified (0.0.0.0/::),
     # unique-local fc00::/7, reserved, and shared ranges.
     return addr.is_global and not addr.is_multicast

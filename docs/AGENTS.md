@@ -54,16 +54,13 @@ interpreter = Agent(
     # NO session memory — stateless per item (§2).
     output_schema=Interpretation,            # strict; off-schema output rejected
     pre_hooks=[
-        PIIDetectionGuardrail(mask=True),    # Agno built-in — masks the LLM-bound copy
-        UntrustedContentGuardrail(),         # spotlight/delimit + strip Unicode tag chars (§5)
-        InjectionFlagGuardrail(),            # custom, LOG-ONLY: annotates known injection
-                                             # patterns for observability; never blocks —
-                                             # blocking would silently drop saved posts that
-                                             # merely quote injection phrasing (memes), and the
-                                             # structural quarantine already makes payloads inert
+        PIIDetectionGuardrail(mask=True),    # Agno built-in — masks the LLM-bound copy;
+                                             # idempotent, so it is safe as the one hook
     ],
 )
 ```
+
+**Single owner (decided F0.5):** the deterministic pipeline (`interpret()`) applies sanitize + spotlight + injection-flag + PII mask exactly once before `agent.run`; only the idempotent PII hook is also wired on the agent. Wiring the content-rewriting guardrails (`UntrustedContentGuardrail`, `InjectionFlagGuardrail` — both still live in `guardrails/injection.py` for reuse) as pre_hooks too double-applied the transforms and nested spotlight fences on the live prompt. Injection flagging stays LOG-ONLY: it never blocks — blocking would silently drop saved posts that merely quote injection phrasing (memes), and the structural quarantine already makes payloads inert.
 
 **Stack rationale (decided 2026-07-22).** Presidio and LLM Guard were cut. Presidio duplicated the built-in masker's failure-mode coverage for this data (structured PII — emails/phones — in your own saved captions) while its NER masking of PERSON/LOCATION would destroy the creator/place names that *are* the content; LLM Guard was a torch-sized dependency scanning an output whose only destination is a local note sitting next to the verbatim caption. The defense that matters is structural: tool-less model, strict schema, value re-forcing, deterministic sanitize.
 
@@ -74,7 +71,7 @@ interpreter = Agent(
 - **Egress (decided 2026-07-22 — split by trust, not one global allowlist):**
   - *Agent context:* the interpreter has **no tools**, so its only egress is the model API call itself. Nothing an injected caption says can cause a fetch.
   - *`gallery-dl` / `yt-dlp`:* scoped to `instagram.com` + its CDNs (`cdninstagram.com`, `fbcdn.net`); session cookies allowed — that is their job.
-  - *Link fetcher (trafilatura):* may hit any public URL, but is **credential-less** (never sends cookies/auth headers) and SSRF-guarded. The guard must be TOCTOU-safe: **resolve DNS once, validate the resolved address, and connect to that pinned IP** (a low-TTL attacker record defeats check-then-refetch); **redirects are not auto-followed — each hop is re-validated** (a public URL 302ing to `http://169.254.169.254/` or `127.0.0.1` is the classic bypass); the blocklist covers IPv4 private/loopback/link-local **and** `0.0.0.0`, IPv6 (`::1`, `fc00::/7`, `fe80::/10`, `::ffff:0:0/96` mapped forms), and non-decimal IP encodings. Response is always treated as untrusted input.
+  - *Link fetcher (trafilatura):* may hit any public URL, but is **credential-less** (never sends cookies/auth headers) and SSRF-guarded. The guard must be TOCTOU-safe: **resolve DNS once, validate the resolved address, and connect to that pinned IP** (a low-TTL attacker record defeats check-then-refetch); **redirects are not auto-followed — each hop is re-validated** (a public URL 302ing to `http://169.254.169.254/` or `127.0.0.1` is the classic bypass); the blocklist covers IPv4 private/loopback/link-local **and** `0.0.0.0`, IPv6 (`::1`, `fc00::/7`, `fe80::/10`, `::ffff:0:0/96` mapped forms, **and every IPv6 form embedding an IPv4 destination — the NAT64 well-known prefix `64:ff9b::/96` and deprecated IPv4-compatible `::a.b.c.d` — decoded and re-checked as the embedded IPv4**; a local DNS64/NAT64 gateway would otherwise translate a "global" `64:ff9b::a9fe:a9fe` straight to `169.254.169.254`), and non-decimal IP encodings. Response is always treated as untrusted input.
   - *Enforcement, not assertion:* the gallery-dl/yt-dlp Instagram scope is enforced in code at F2 (yt-dlp invoked only on `instagram.com` permalinks; fetched-URL host check against the allowlist), not assumed from tool defaults.
   - No long-lived secrets in agent context; short-lived, audience-scoped tokens only.
 
