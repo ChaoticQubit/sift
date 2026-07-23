@@ -6,7 +6,7 @@ from datetime import date
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Medium(str, Enum):
@@ -59,6 +59,18 @@ class ActionItem(BaseModel):
     due: date | None = None
     confidence: float = Field(0.0, ge=0.0, le=1.0)
     status: Literal["pending", "confirmed", "dismissed"] = "pending"
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _clamp_confidence(cls, v: object) -> object:
+        """Clamp, not reject (AGENTS.md §2). Runs before ge/le, so an out-of-range model
+        value is coerced into [0,1] here — including inside agno's own output_schema
+        parse, which would otherwise swallow the ValidationError and degrade the whole
+        Interpretation to a raw string (reject, not clamp)."""
+        try:
+            return min(1.0, max(0.0, float(v)))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return v  # non-numeric: let pydantic report it
 
 
 class Interpretation(BaseModel):

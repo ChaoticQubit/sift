@@ -38,7 +38,7 @@ def test_unknown_source_raises(settings):
         core.run("instagrapi", settings)
 
 
-def test_run_counts_and_note_content(settings, monkeypatch):
+def test_run_counts_and_note_content(settings, monkeypatch, fake_model):
     monkeypatch.setattr("sift.ingest.dyi_export.pull", lambda s, p=None: _fake_items())
 
     report = core.run("dyi_export", settings, path="ignored.zip")
