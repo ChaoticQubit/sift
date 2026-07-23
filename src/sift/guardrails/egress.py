@@ -7,6 +7,7 @@ This module governs the deterministic fetchers:
   - link fetcher (trafilatura): any public URL, but CREDENTIAL-LESS (never send cookies/auth)
     and private/loopback/link-local addresses BLOCKED (SSRF guard). Response = untrusted.
 """
+
 from __future__ import annotations
 
 # TODO F0.5: is_fetchable(url) -> bool (public-IP check after DNS resolution), plus the

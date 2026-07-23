@@ -4,6 +4,7 @@ Agno's built-in PIIDetectionGuardrail(mask=True) is the hook; the same masking i
 as a plain callable so the F5 RAG embed path can reuse it outside an agent context.
 The vault always stays verbatim.
 """
+
 from __future__ import annotations
 
 # TODO F0.5: configure PIIDetectionGuardrail(mask=True) for the interpreter's pre_hooks,

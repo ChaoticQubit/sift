@@ -1,4 +1,5 @@
 """Readable-content extraction for shared links via trafilatura (NOT Mercury — dead). DESIGN.md §7."""
+
 from __future__ import annotations
 
 from ..config import Settings

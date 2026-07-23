@@ -1,4 +1,5 @@
 """Core data contracts. Keep stable — the fold-in seam (CLAUDE.md Conventions)."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -33,6 +34,7 @@ class Item(BaseModel):
     ingest_via: IngestVia
     saved_collection: str | None = None
     saved_at: date | None = None
+    source_export: str | None = None  # e.g. "instagram-2026-07-20" (dyi_export only)
     media_files: list[str] = []
     raw: dict = {}
 

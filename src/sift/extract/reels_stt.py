@@ -3,6 +3,7 @@
 Major-language target in v1. Detect language, record confidence, flag low-confidence.
 Whisper translate is X->English only; non-English targets are DEFERRED.
 """
+
 from __future__ import annotations
 
 from ..config import Settings

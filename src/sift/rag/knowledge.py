@@ -1,4 +1,5 @@
 """Agno Knowledge base over LanceDB (agentic RAG, hybrid search). DESIGN.md §10."""
+
 from __future__ import annotations
 
 from ..config import Settings
