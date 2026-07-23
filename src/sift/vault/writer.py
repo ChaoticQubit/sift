@@ -46,8 +46,12 @@ def _slug(note: Note) -> str:
 
 
 def _one_liner(note: Note) -> str:
-    """Entertainment routing: a single log-entry line instead of a full note."""
-    text = note.interpretation.summary or note.item.caption or "entertainment"
+    """Entertainment routing: a single log-entry line instead of a full note.
+
+    Never caption-derived: untrusted caption text appears only inside fenced blocks
+    (DESIGN.md §6) — an unfenced bare URL would auto-link in Obsidian's reading view.
+    """
+    text = note.interpretation.summary or "entertainment"
     line = _escape_md((text.splitlines() or [""])[0])
     if note.item.permalink:
         line += f" — {note.item.permalink}"
@@ -69,7 +73,10 @@ def write(note: Note, settings: Settings) -> str:
     captures = settings.vault_path / "Captures"
     captures.mkdir(parents=True, exist_ok=True)
     short = hashlib.sha256(note.item.id.encode()).hexdigest()[:8]
-    path = captures / f"{_slug(note)}-{short}.md"
+    # Identity lives in the id-hash suffix, not the content-derived slug: refresh the
+    # existing note for this Item.id even if the caption/summary (and thus slug) changed.
+    existing = sorted(captures.glob(f"*-{short}.md"))
+    path = existing[0] if existing else captures / f"{_slug(note)}-{short}.md"
 
     if note.interpretation.classification is Classification.entertainment:
         logger.info("entertainment -> one-liner: %s", note.item.id)

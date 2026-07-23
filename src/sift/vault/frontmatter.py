@@ -37,5 +37,7 @@ def to_frontmatter(note: Note) -> dict:
     meta["action_items"] = [_action_item(ai) for ai in interp.action_items]
     meta["links"] = list(extraction.artifacts.get("links", []))
     meta["media_files"] = list(item.media_files)
+    if item.source_export:
+        meta["source_export"] = item.source_export
     meta["tags"] = list(interp.tags)
     return meta

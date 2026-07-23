@@ -33,6 +33,7 @@ def _note(**interp_kwargs) -> Note:
         ingest_via=IngestVia.dyi_export,
         saved_collection="Recipes",
         saved_at=date(2026, 3, 12),
+        source_export="instagram-2026-07-20",
         media_files=["media/reel_ABC123.mp4"],
     )
     extraction = Extraction(text=item.caption, languages=["en"])
@@ -75,6 +76,7 @@ def test_frontmatter_golden():
         ],
         "links": [],
         "media_files": ["media/reel_ABC123.mp4"],
+        "source_export": "instagram-2026-07-20",
         "tags": ["recipe", "dessert"],
     }
 
@@ -84,8 +86,9 @@ def test_frontmatter_omits_absent_optionals():
     note.item.permalink = None
     note.item.saved_collection = None
     note.item.saved_at = None
+    note.item.source_export = None
     meta = to_frontmatter(note)
-    assert not {"source", "saved_collection", "saved_at"} & meta.keys()
+    assert not {"source", "saved_collection", "saved_at", "source_export"} & meta.keys()
 
 
 def test_writer_idempotent_and_fenced(settings):
@@ -104,6 +107,17 @@ def test_writer_idempotent_and_fenced(settings):
     assert not storage.is_new(note.item.id, settings)  # writer marked it seen
 
 
+def test_writer_refreshes_same_note_when_caption_changes(settings):
+    note = _note()
+    p1 = writer.write(note, settings)
+    note.item.caption = "Edited caption entirely different"
+    note.extraction.text = note.item.caption
+    p2 = writer.write(note, settings)
+    assert p1 == p2  # identity is Item.id, not the content-derived slug
+    assert [Path(p1)] == list((settings.vault_path / "Captures").glob("*.md"))
+    assert "Edited caption entirely different" in Path(p2).read_text()
+
+
 def test_entertainment_routes_to_one_liner(settings):
     note = _note(
         classification=Classification.entertainment, summary="A funny cat video."
@@ -111,6 +125,14 @@ def test_entertainment_routes_to_one_liner(settings):
     body = frontmatter.loads(Path(writer.write(note, settings)).read_text()).content
     assert len(body.splitlines()) == 1
     assert "cat video" in body
+
+
+def test_one_liner_never_uses_caption(settings):
+    note = _note(classification=Classification.entertainment)  # empty summary
+    note.item.caption = "visit http://phish.example now"
+    body = frontmatter.loads(Path(writer.write(note, settings)).read_text()).content
+    assert "phish.example" not in body  # caption text must not appear unfenced
+    assert note.item.permalink in body
 
 
 def test_writer_reforces_status_pending(settings):

@@ -34,6 +34,7 @@ class Item(BaseModel):
     ingest_via: IngestVia
     saved_collection: str | None = None
     saved_at: date | None = None
+    source_export: str | None = None  # e.g. "instagram-2026-07-20" (dyi_export only)
     media_files: list[str] = []
     raw: dict = {}
 
