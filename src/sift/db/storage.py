@@ -1,14 +1,18 @@
-"""Agno Db (SQLite) for agent sessions + user memory + dedup ledger. DESIGN.md §5, §12."""
+"""Dedup ledger (SQLite) — the ONLY durable state in v1. DESIGN.md §12; AGENTS.md §1.
+
+The interpreter is stateless per item (no Agno Db sessions/memory until a genuinely
+conversational agent exists — Life Planner fold-in).
+"""
 from __future__ import annotations
 
 from ..config import Settings
 
 
-def get_db(settings: Settings):
-    """TODO F0: return an Agno Db bound to settings.resolved_db_url (SQLite). Shared by interpreter + search."""
-    raise NotImplementedError("F0: Agno Db")
-
-
 def is_new(item_id: str, settings: Settings) -> bool:
-    """TODO F0: dedup ledger check (stable Item.id)."""
+    """TODO F0: check the seen-items ledger in settings.resolved_work_dir (stable Item.id)."""
+    raise NotImplementedError("F0: dedup ledger")
+
+
+def mark_seen(item_id: str, settings: Settings) -> None:
+    """TODO F0: record an item as processed (called by the writer after a successful note write)."""
     raise NotImplementedError("F0: dedup ledger")

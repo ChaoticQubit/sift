@@ -13,7 +13,8 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
 
     Pipeline (DESIGN.md §5, AGENTS.md §2):
         items = ingest.<source>.pull(settings, path)              # normalized Items w/ captions
-        for item in dedup.new_only(items, settings):
+        for item in items:
+            if not db.storage.is_new(item.id, settings): continue  # dedup ledger
             extraction = extract.router.extract(item, settings)    # deterministic: caption/OCR/STT/link
             interp = agents.interpreter.interpret(item, extraction, settings)
                                                                    # QUARANTINED, tool-less: sanitized

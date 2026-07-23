@@ -9,12 +9,12 @@ How Sift's agents are built (Agno v2) and the safety harness every agent runs in
 ## 1. Framework: Agno v2
 
 - **Pin the version** (`agno==2.7.x` or later). Agno had a breaking v1→v2 rewrite — **ignore pre-2026 tutorials**, follow docs.agno.com.
-- **Storage/memory:** one Agno `Db` over **SQLite** (local) holds agent sessions, cross-session user memory, and session summaries. Upgrade path: Postgres (unifies sessions + memory + PgVector RAG in one server) if ever wanted.
-- **RAG/knowledge:** Agno **Knowledge** over **LanceDB** (embedded, local), hybrid search on, agentic retrieval (agent decides when to fetch). Embedder swappable (`text-embedding-3-small`, or Ollama local).
-- **Reasoning:** give agents `ReasoningTools` (think/analyze) and/or a reasoning model; Claude is first-class via the Anthropic provider.
+- **Storage/memory (decided 2026-07-22):** Sift v1 keeps only a **dedup ledger** (SQLite). The interpreter is a stateless per-item transform — session memory would persist untrusted content into future contexts (an injection-lifetime extension), and no v1 agent has a conversation to remember. Agno `Db` (sessions + user memory + summaries) arrives in the commit that creates the first genuinely conversational agent (Life Planner fold-in); upgrade path then: Postgres (unifies sessions + memory + PgVector RAG).
+- **RAG/knowledge:** Agno **Knowledge** over **LanceDB** (embedded, local), hybrid search on, **queried deterministically — no retrieval agent in v1** (`DESIGN.md` §10). Embedder swappable (`text-embedding-3-small`, or Ollama local); the embed-bound copy of note text is PII-masked with the same masker as the interpreter path.
+- **Reasoning:** Claude is first-class via the Anthropic provider. Reasoning stays **off** on the interpreter by default (a 3-way classify + short summary doesn't need it; one constructor flag if recall ever measurably suffers). `ReasoningTools` are tools — never attach them to a quarantined agent whose invariant is "zero tools".
 - **Tools:** in Sift v1, agents hold **no tools** (§2) — capability is pipeline code. For future acting agents: plain typed `@tool` Python functions only; external integrations via `MCPTools`/`MultiMCPTools`; web research via built-in toolkits (Tavily/Exa/DuckDuckGo) when needed.
 - **Composition:** Sift v1 needs none — the pipeline is deterministic Python around one agent call. For future multi-agent features: a **Team** (delegating leader + specialist members) or a **Workflow** (deterministic step pipeline) — prefer Workflow so trust boundaries stay explicit (§2).
-- **Runtime:** self-host the free **AgentOS** FastAPI runtime with full run logging. **Do not** pay for the hosted Control Plane ($150/mo) initially.
+- **Runtime:** none in v1 — Sift is a batch CLI driven by launchd/cron; nothing in F0–F7 serves HTTP. A resident runtime (self-hosted free **AgentOS**; never the $150/mo hosted Control Plane) first earns its keep at Life Planner fold-in.
 - **Ceiling caveat:** if a future feature needs durable, heavily-branching, deterministic resumable orchestration, prototype in Agno **Workflows** first; only reach for LangGraph if you hit Agno's control ceiling. Don't pre-split the stack.
 
 ---
@@ -25,11 +25,11 @@ Meta's "Rule of Two" (same family as the dual-LLM / CaMeL pattern): an agent con
 
 Sift enforces this **structurally**, not with a second agent (decided 2026-07-22; the earlier reader/enricher pair put summarization — i.e. reading untrusted text — in the same context as write tools, which is exactly what the rule forbids):
 
-**The `interpreter` (QUARANTINED) — the only model that touches untrusted content.**
+**The `interpreter` (QUARANTINED) — the only agent, and one of exactly two tool-less model touchpoints on untrusted content** (the other: the F3 vision-OCR call, image → text, whose output re-enters the same sanitize path).
 - Input: sanitized caption/OCR/transcript/link text (§5) — still natural language, still assume poisoned.
-- **NO tools. NO secrets in context.** It cannot fetch, write, tag, or execute anything.
+- **NO tools. NO secrets in context. NO session memory — stateless per item** (persisted memory would carry a poisoned item's content into every later context).
 - Output: a strict Pydantic `Interpretation` record (classification, summary, tags, action-item candidates). Off-schema output is rejected and logged.
-- A hijacked interpreter can only emit a weird record — which schema validation catches.
+- Schema validates **shape, not honesty** — a hijacked interpreter can still emit a *well-formed* record. So the boundary code **re-forces security-relevant values**: every action item is re-initialized to `status: pending` (never trusted from the model), confidence is clamped to [0,1], classification is a closed enum. The model proposes; deterministic code disposes.
 
 **Everything with capability is deterministic code, not a model.**
 - Extraction (`extract/router.py` → OCR/STT/link fetch) is plain code dispatched by `Item.medium` — choosing "video → STT" needs no intelligence, so no LLM sits in that loop and no fetch is ever attacker-triggerable via caption text.
@@ -44,33 +44,38 @@ When Life Planner later needs an agent that *acts* (calendar writes, notificatio
 Guardrails in Agno are hooks on every `Agent`/`Team` that raise `InputCheckError` / `OutputCheckError`. Order them cheap→expensive.
 
 ```python
-from agno.guardrails import PromptInjectionGuardrail, PIIDetectionGuardrail
+from agno.guardrails import PIIDetectionGuardrail
 # custom guardrails subclass agno.guardrails.BaseGuardrail
 
 interpreter = Agent(
     name="interpreter",
     model=...,
     # NO tools — this agent only interprets. Capability lives in pipeline code.
-    reasoning=True,
+    # NO session memory — stateless per item (§2).
     output_schema=Interpretation,            # strict; off-schema output rejected
     pre_hooks=[
-        PromptInjectionGuardrail(),          # cheap: known injection patterns
-        PIIDetectionGuardrail(mask=True),    # Agno built-in (regex) — first pass
-        PresidioGuardrail(),                 # custom BaseGuardrail wrapping Presidio (real recall)
+        PIIDetectionGuardrail(mask=True),    # Agno built-in — masks the LLM-bound copy
         UntrustedContentGuardrail(),         # spotlight/delimit + strip Unicode tag chars (§5)
+        InjectionFlagGuardrail(),            # custom, LOG-ONLY: annotates known injection
+                                             # patterns for observability; never blocks —
+                                             # blocking would silently drop saved posts that
+                                             # merely quote injection phrasing (memes), and the
+                                             # structural quarantine already makes payloads inert
     ],
-    post_hooks=[SensitiveOutputGuardrail()], # LLM Guard Sensitive + MaliciousURLs on OUTPUT
 )
 ```
 
+**Stack rationale (decided 2026-07-22).** Presidio and LLM Guard were cut. Presidio duplicated the built-in masker's failure-mode coverage for this data (structured PII — emails/phones — in your own saved captions) while its NER masking of PERSON/LOCATION would destroy the creator/place names that *are* the content; LLM Guard was a torch-sized dependency scanning an output whose only destination is a local note sitting next to the verbatim caption. The defense that matters is structural: tool-less model, strict schema, value re-forcing, deterministic sanitize.
+
 ### (a) PII — prevent leakage/exfiltration
-- **Scope (decided 2026-07-22): masking applies to the LLM-bound copy of the text only.** The vault note is written deterministically from the `Item` and keeps your data **verbatim** — it is your own content on your own disk; masking it would destroy what you saved on purpose. PII guardrails protect what leaves the machine (model APIs) and what the model emits.
-- **Input:** `PIIDetectionGuardrail(mask=True)` (Agno, regex — fast first pass) **+** a custom `PresidioGuardrail(BaseGuardrail)` wrapping Microsoft **Presidio** (`AnalyzerEngine` + `AnonymizerEngine`, 100+ entity types; add `PatternRecognizer`s for any app-specific IDs) for real recall.
-- **Output:** a `post_hook` wrapping **LLM Guard**'s `Sensitive` + `MaliciousURLs` output scanners — catches PII the model itself emits, before it leaves. Raise `OutputCheckError` to block.
+- **Scope (decided 2026-07-22): masking applies to every model-API-bound copy of text — the interpreter's input AND the embedder's input (`DESIGN.md` §10) — and nothing else.** The vault note is written deterministically from the `Item` and keeps your data **verbatim** — it is your own content on your own disk; masking it would destroy what you saved on purpose. (The F3 vision-OCR call ships image bytes, which can't be text-masked — accepted tradeoff, `DESIGN.md` §13.3.)
+- **Masker:** `PIIDetectionGuardrail(mask=True)` (Agno built-in) as the hook, with the same masking function exposed as a plain callable (`guardrails/pii.py`) so the RAG embed path can reuse it outside an agent context.
+- **Output:** the writer emits model-produced fields (summary/tags/action text) as escaped plain text — no rendered markdown from model output. If a post-check is ever wanted, rerun the same regex masker on the summary; no new dependency.
 - **Egress (decided 2026-07-22 — split by trust, not one global allowlist):**
   - *Agent context:* the interpreter has **no tools**, so its only egress is the model API call itself. Nothing an injected caption says can cause a fetch.
   - *`gallery-dl` / `yt-dlp`:* scoped to `instagram.com` + its CDNs (`cdninstagram.com`, `fbcdn.net`); session cookies allowed — that is their job.
-  - *Link fetcher (trafilatura):* may hit any public URL, but is **credential-less** (never sends cookies/auth headers), **blocks private/loopback/link-local addresses** (SSRF guard), and its response is always treated as untrusted input.
+  - *Link fetcher (trafilatura):* may hit any public URL, but is **credential-less** (never sends cookies/auth headers) and SSRF-guarded. The guard must be TOCTOU-safe: **resolve DNS once, validate the resolved address, and connect to that pinned IP** (a low-TTL attacker record defeats check-then-refetch); **redirects are not auto-followed — each hop is re-validated** (a public URL 302ing to `http://169.254.169.254/` or `127.0.0.1` is the classic bypass); the blocklist covers IPv4 private/loopback/link-local **and** `0.0.0.0`, IPv6 (`::1`, `fc00::/7`, `fe80::/10`, `::ffff:0:0/96` mapped forms), and non-decimal IP encodings. Response is always treated as untrusted input.
+  - *Enforcement, not assertion:* the gallery-dl/yt-dlp Instagram scope is enforced in code at F2 (yt-dlp invoked only on `instagram.com` permalinks; fetched-URL host check against the allowlist), not assumed from tool defaults.
   - No long-lived secrets in agent context; short-lived, audience-scoped tokens only.
 
 ### (b) Restrict terminal / command usage — architectural, not a filter
@@ -81,7 +86,7 @@ interpreter = Agent(
 ### (c) Block malicious scripts
 - **Default: no code-exec tool at all → nothing to exploit.**
 - If code execution is ever unavoidable, run it in a **tiered sandbox** by trust: gVisor (`runsc`) for your own generated code; a **Firecracker microVM** (E2B / Modal / Vercel Sandbox) for anything derived from untrusted content. Enforce: **no network, read-only FS, non-root, seccomp + `PR_SET_NO_NEW_PRIVS`, isolated /proc, CPU/mem/time limits.**
-- Add LLM Guard `BanCode` / `Secrets` **input** scanners to flag code or keys embedded in captions before they reach anything.
+- Code embedded in a caption is inert against a tool-less interpreter — that inertness is the point of the structural Rule of Two; no code-scanner dependency is needed for it.
 
 ---
 
@@ -96,22 +101,22 @@ In Sift v1 the human-in-the-loop surface is **`Action Review.md`** (draft-then-a
 - **Spotlighting:** in the interpreter's prompt, wrap every caption/transcript/link body in randomized delimiters and label it explicitly as **untrusted DATA, never instructions**.
 - **Sanitize deterministically before text enters context:** strip Unicode tag chars `U+E0000–U+E007F`, neutralize markdown image/link syntax, normalize whitespace.
 - **Provenance:** tag every item with source URL + timestamp + `ingest_via` + trust tier, carried through to the note.
-- **Self-verification:** a post-generation schema-validation step on the interpreter's structured output (reject anything off-schema, log the rejection).
+- **Self-verification + value re-forcing:** a post-generation schema-validation step on the interpreter's structured output (reject anything off-schema, log the rejection), then deterministic re-forcing of security-relevant values — `status: pending` re-initialized, confidence clamped, classification enum-checked (§2).
 
 ---
 
 ## 6. Observability
 
-Run under **AgentOS** with full run logging. Log every tool invocation with its provenance chain (which item, which source, which trust tier). Keep tools few and strong. Every guardrail block is logged, not silently swallowed.
+Stdlib logging + the `RunReport` counters (`processed/written/skipped/media_missing/guardrail_blocks/errors`) are v1's observability — right-sized for a batch pipeline. Log every model call and fetch with its provenance chain (which item, which source, which trust tier). Every guardrail block or schema rejection is logged, not silently swallowed. AgentOS run logging arrives with the resident runtime at Life Planner fold-in (§1).
 
 ---
 
 ## 7. Minimum-viable harness (if shipping fast)
 
-The **tool-less interpreter + strict output schema** (the structural core — non-negotiable) + `pre_hooks=[PromptInjectionGuardrail(), PIIDetectionGuardrail(mask=True)]` + LLM Guard `Sensitive` post-hook + credential-less link fetches. Add Presidio-in-`BaseGuardrail`, the private-IP block, and a gVisor/Firecracker sandbox as the hardening pass.
+The **tool-less, stateless interpreter + strict output schema + value re-forcing** (the structural core — non-negotiable) + the deterministic sanitize + `PIIDetectionGuardrail(mask=True)` + credential-less link fetches. Add the full SSRF guard (pin-IP, per-hop redirect validation, IPv6/encoded ranges) and a gVisor/Firecracker sandbox (only if code-exec ever appears) as the hardening pass.
 
 ---
 
 ## 8. Standard for all project agents
 
-Every agent built in this project (Sift today; Life Planner agents; anything authored via the dashboard later) uses: **Agno v2**, persistent storage (SQLite/Postgres), RAG where needed (LanceDB/PgVector), reasoning, and **this guardrail harness** — PII masked on LLM-bound text, no generic shell/command tool, human-approval on writes, sandbox for any code-exec, and the Rule of Two whenever untrusted external content is ingested: **the model that reads untrusted text holds no tools and no secrets; capability lives in deterministic code (or a separate agent that only ever sees typed records).**
+Every agent built in this project (Sift today; Life Planner agents; anything authored via the dashboard later) uses: **Agno v2**, persistent storage **where the agent actually has sessions to persist** (SQLite/Postgres), RAG where needed (LanceDB/PgVector), and **this guardrail harness** — PII masked on everything model-API-bound, no generic shell/command tool, human-approval on writes, sandbox for any code-exec, and the Rule of Two whenever untrusted external content is ingested: **any model touching untrusted content holds no tools and no secrets; capability lives in deterministic code (or a separate agent that only ever sees typed records, with its security-relevant values re-forced at the boundary).**

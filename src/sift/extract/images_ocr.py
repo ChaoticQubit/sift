@@ -1,7 +1,9 @@
-"""OCR every image in a carousel (loop all N). DESIGN.md §7 + §13 caveats.
+"""OCR every image in a carousel (loop all N) via a vision-LLM. DESIGN.md §7 + §13.3.
 
-PaddleOCR default; keep a vision-LLM fallback for stylized/garbled images.
-Instagram images are OUT OF DOMAIN for document OCR — validate on real saved images.
+VLM-only (decided 2026-07-22): Instagram content is out-of-domain for document OCR engines
+and home turf for a VLM. The call is TOOL-LESS and its text output re-enters the same
+sanitize -> interpreter path as any untrusted text. Ships image bytes to the provider
+(accepted tradeoff); a local OCR engine/VLM is the documented swap.
 """
 from __future__ import annotations
 
@@ -10,5 +12,5 @@ from ..models import Extraction, Item
 
 
 def extract(item: Item, settings: Settings) -> Extraction:
-    """TODO F3: for each media file -> OCR -> concat raw + cleaned text; VLM fallback hook."""
-    raise NotImplementedError("F3: carousel/image OCR")
+    """TODO F3: for each media file -> tool-less VLM OCR call -> concat text per image."""
+    raise NotImplementedError("F3: carousel/image OCR (VLM)")

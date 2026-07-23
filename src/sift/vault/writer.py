@@ -12,6 +12,9 @@ def write(note: Note, settings: Settings) -> str:
     """Write / refresh a capture note in <vault>/Captures. Idempotent by Item.id.
 
     entertainment -> one-line log entry only. Returns the note path.
-    TODO F0: python-frontmatter dump; media embed; dedup ledger update in .sift/.
+    Caption/extracted bodies go in FENCED code blocks (render-defanged — DESIGN.md §6);
+    model-produced fields (summary/tags/action text) are escaped plain text; action-item
+    status is re-forced to "pending" here regardless of what the record claims.
+    TODO F0: python-frontmatter dump; media embed; db.storage.mark_seen on success.
     """
     raise NotImplementedError("F0: idempotent note write")
