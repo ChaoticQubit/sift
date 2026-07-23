@@ -1,4 +1,5 @@
 """Core data contracts. Keep stable — the fold-in seam (CLAUDE.md Conventions)."""
+
 from __future__ import annotations
 
 from datetime import date

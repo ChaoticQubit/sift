@@ -2,6 +2,7 @@
 
 NEVER fire alerts autonomously (CLAUDE.md rule 7). Items stay status: pending until confirmed.
 """
+
 from __future__ import annotations
 
 from ..config import Settings

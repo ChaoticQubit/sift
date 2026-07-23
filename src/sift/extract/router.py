@@ -1,4 +1,5 @@
 """Dispatch an Item to the right extractor by medium (DESIGN.md §7)."""
+
 from __future__ import annotations
 
 from ..config import Settings
@@ -18,4 +19,6 @@ def extract(item: Item, settings: Settings) -> Extraction:
         from . import links
 
         return links.extract(item, settings)
-    return Extraction()
+    from . import captions
+
+    return captions.extract(item)

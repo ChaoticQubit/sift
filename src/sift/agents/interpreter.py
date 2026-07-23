@@ -7,6 +7,7 @@ Off-schema output is rejected and logged. Boundary code re-forces security-relev
 (status -> pending, confidence clamped) — the model proposes, deterministic code disposes.
 pre_hooks = [PIIDetectionGuardrail(mask=True), UntrustedContentGuardrail, InjectionFlagGuardrail (log-only)]
 """
+
 from __future__ import annotations
 
 from ..config import Settings

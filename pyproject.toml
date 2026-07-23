@@ -5,6 +5,7 @@ description = "Turn your Instagram saves into a searchable local second brain (A
 requires-python = ">=3.11"
 dependencies = [
   "agno>=2.7,<3",             # PIN v2 — v1 tutorials are stale (breaking rewrite)
+  "anthropic>=0.40",          # agno's Claude wrapper imports the SDK at module load
   "gallery-dl>=1.27",         # cookie_fetch: saved-folder + captions
   "yt-dlp>=2024.8.6",
   "trafilatura>=1.9",         # links

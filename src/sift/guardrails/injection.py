@@ -4,6 +4,7 @@ Blocking on injection patterns is a silent data-loss mode (saved posts legitimat
 injection phrasing); the structural quarantine already makes payloads inert, so pattern
 detection is LOG-ONLY.
 """
+
 from __future__ import annotations
 
 # TODO F0.5:

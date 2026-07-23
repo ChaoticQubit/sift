@@ -4,6 +4,7 @@ RUNS ON THE USER'S MACHINE + HOME IP. READ-ONLY. Never like/follow/comment/DM.
 Weekly default (daily ceiling, NEVER hourly). One session. Back off (pause days) on HTTP 429.
 No instagrapi — this uses the user's real logged-in web session via gallery-dl.
 """
+
 from __future__ import annotations
 
 from ..config import Settings

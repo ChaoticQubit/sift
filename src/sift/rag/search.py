@@ -3,6 +3,7 @@
 Keeps the interpreter the only model in the system and closes the delayed-injection
 re-entry path (a model re-reading verbatim vault captions would bypass ingest guardrails).
 """
+
 from __future__ import annotations
 
 from ..config import Settings

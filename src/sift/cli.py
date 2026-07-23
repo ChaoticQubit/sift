@@ -1,4 +1,5 @@
 """Thin typer shell. NO business logic here (CLAUDE.md rule 6)."""
+
 from __future__ import annotations
 
 from pathlib import Path

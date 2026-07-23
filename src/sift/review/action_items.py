@@ -1,4 +1,5 @@
 """Collect candidate action items from notes; normalize dates. DESIGN.md §9."""
+
 from __future__ import annotations
 
 from ..config import Settings

@@ -5,6 +5,7 @@ and home turf for a VLM. The call is TOOL-LESS and its text output re-enters the
 sanitize -> interpreter path as any untrusted text. Ships image bytes to the provider
 (accepted tradeoff); a local OCR engine/VLM is the documented swap.
 """
+
 from __future__ import annotations
 
 from ..config import Settings

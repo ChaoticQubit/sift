@@ -4,6 +4,7 @@ Drop a **tiny fake DYI export** here for offline development (F0/F1):
 
 - `saved_posts.json` — a couple of fake saved permalinks + timestamps
 - `messages/inbox/<self>/message_1.json` — a fake self-thread with 1–2 shared posts
-- `sample_image.jpg`, `sample_clip.mp4` — tiny sample media
+- `sample_image.jpg`, `sample_clip.mp4` — tiny sample media (arrive with the phase
+  that reads them, F1+; F0 keeps this dir JSON-only — no binary files in the repo)
 
 No test may hit Instagram or a paid API. Keep everything here small and synthetic.

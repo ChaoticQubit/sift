@@ -2,6 +2,7 @@
 
 Replaces the 'DM myself' habit: user taps Share -> Sift, item lands instantly. Strategic end state.
 """
+
 from __future__ import annotations
 
 from ..config import Settings
