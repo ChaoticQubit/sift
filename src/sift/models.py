@@ -27,7 +27,7 @@ class IngestVia(str, Enum):
 class Item(BaseModel):
     """A saved / DM'd / shared thing, normalized by an ingest adapter (pre-extraction)."""
 
-    id: str  # stable: hash(permalink) + saved_at
+    id: str  # stable: sha256(canonical permalink) — date-free so export+fetch dedup; text notes hash text+timestamp
     permalink: str | None = None
     medium: Medium
     caption: str = ""  # FIRST-CLASS content (DESIGN.md §7) — never drop it
