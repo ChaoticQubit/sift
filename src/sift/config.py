@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Ingestion. Cadence is enforced in code (cookie_fetch refuses runs <20h apart, F2),
     # not by a config string. No instagrapi flag — banned outright (CLAUDE.md rule 1).
     cookie_browser: str = "chrome"  # gallery-dl --cookies-from-browser
+    # Your own Instagram username: cookie_fetch targets
+    # https://www.instagram.com/<ig_username>/saved/ (required for that source only).
+    ig_username: str | None = None
 
     @property
     def resolved_work_dir(self) -> Path:
