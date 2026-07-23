@@ -77,12 +77,17 @@ def _utc_date(epoch_s: float) -> date:
 
 def canonical_permalink(link: str) -> str:
     """One post, one id: for Instagram permalinks, drop query/fragment junk
-    (?igsh=... share tokens) and normalize the trailing slash so the same post
-    saved via export, DM share, or cookie_fetch hashes identically. Non-Instagram
-    links (DM'd articles etc.) keep their query — it may be identity there."""
+    (?igsh=... share tokens), normalize the trailing slash, AND fold /reel/,
+    /reels/, /tv/ into /p/ — shortcodes share one namespace, and gallery-dl
+    emits /p/<code>/ for most reels (its appended audio entry defeats the
+    len(files)==1 reel check, instagram.py:365-402) while the DYI export and
+    DM shares use /reel/<code>/. Without the fold the same saved reel gets two
+    ids and two notes. Non-Instagram links (DM'd articles etc.) keep their
+    query — it may be identity there."""
     split = urlsplit(link)
     if split.hostname and is_instagram_host(split.hostname):
-        return f"{split.scheme}://{split.netloc}{split.path.rstrip('/')}/"
+        path = re.sub(r"^/(?:reel|reels|tv)/", "/p/", split.path)
+        return f"{split.scheme}://{split.netloc}{path.rstrip('/')}/"
     return link
 
 

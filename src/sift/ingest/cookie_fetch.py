@@ -8,14 +8,24 @@ user's real logged-in browser session (--cookies-from-browser; no fresh-login fl
 Safety is enforced in code, not prose (trust boundary — exempt from simplification,
 CLAUDE.md gate 5):
   - Cadence: refuses to run < 20h after the last SUCCESSFUL run ("weekly default,
-    daily ceiling, never hourly" — DESIGN.md §4); the timestamp is recorded only
-    after a clean run.
+    daily ceiling, never hourly" — DESIGN.md §4); the success timestamp is
+    recorded only after a clean run. Every real launch ALSO stamps an attempt
+    timestamp, and a new launch refuses < 4h after the previous ATTEMPT — so a
+    persistently failing session (expired cookies, extractor breakage) under a
+    misconfigured hourly job cannot hammer Instagram unboundedly.
   - 429 back-off: the first rate-limit marker pauses future runs for 1 day,
     doubling on each rate-limited run (2d, 4d, ... capped at 14d); a clean run
     resets the ladder. While paused, runs refuse and say until when.
+  - One run at a time: an exclusive lock on <work>/cookie-fetch.lock; a second
+    simultaneous run refuses instead of opening a parallel session
+    ("one persistent session" — DESIGN.md §4). The subprocess is also killed
+    after a generous timeout so a hung fetch cannot outlive into the next run.
   - Host scope: every recorded URL and every downloaded file's source host must be
     instagram.com / cdninstagram.com / fbcdn.net (subdomain-aware suffix match —
     guardrails/egress.py); anything else is logged, counted, and skipped.
+  - Pinned config: --config-ignore keeps ambient ~/.config/gallery-dl config out
+    of this account-touching run (a user config could otherwise export the
+    browser session cookies to disk, add a proxy, or run postprocessor commands).
 
 Verified against the installed gallery-dl 1.32.7 source:
   - Saved extractor: extractor/instagram.py:755-762 `InstagramSavedExtractor`,
@@ -23,8 +33,13 @@ Verified against the installed gallery-dl 1.32.7 source:
     "https://www.instagram.com/USER/saved/" — exactly the URL built here.
   - Sidecars (--write-metadata): per-file JSON next to each download carrying the
     merged post+file dict — `description` (the caption, instagram.py:246),
-    `post_url` (/p/ or /reel/, instagram.py:399-402), `date` ("YYYY-MM-DD HH:MM:SS"
-    via util.json_default str()), `display_url`/`video_url`, `type`, `username`.
+    `post_url` (instagram.py:396-402: /reel/ only when len(files)==1 and video;
+    the audio entry appended for clips/music metadata at 365-392 flips most
+    reels to /p/ — canonical_permalink folds the two forms), `date`
+    ("YYYY-MM-DD HH:MM:SS" via util.json_default str()),
+    `display_url`/`video_url`, `type`, `username`.
+  - --config-ignore: option.py:645; without it __init__.py main() loads the
+    user's default config files (config.load()).
   - Rate limiting: extractor/common.py:227-251 retries a 429 with
     wait(reason="429 Too Many Requests"); once retries are exhausted it raises
     HttpError "'429 Too Many Requests' for '<url>'" (logged by job.py:176), exit
@@ -37,6 +52,7 @@ Verified against the installed gallery-dl 1.32.7 source:
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
 import logging
@@ -49,7 +65,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from ..config import Settings
-from ..guardrails.egress import is_instagram_host
+from ..guardrails.egress import assert_instagram_permalink, is_instagram_host
 from ..models import IngestVia, Item, Medium, RunReport
 
 # Deliberate sibling reuse (house F1 helpers), not an abstraction layer.
@@ -64,8 +80,17 @@ from .dyi_export import (
 logger = logging.getLogger(__name__)
 
 _MIN_GAP_HOURS = 20  # "weekly default, daily ceiling, never hourly" — DESIGN.md §4
+# Failed launches count too: a broken session (expired cookies) under an hourly cron
+# must not produce 24 real authenticated attempts/day. Short enough to retry the same
+# day after fixing cookies; the 20h gate still owns the post-success cadence.
+_MIN_ATTEMPT_GAP_HOURS = 4
 _BACKOFF_CAP_DAYS = 14
+# A hung gallery-dl must not hold the session open into the next scheduled run; a
+# large first backfill at 6-12s/request still fits comfortably.
+_SUBPROCESS_TIMEOUT = 4 * 3600
 _LAST_RUN_FILE = "cookie-fetch-last-run"
+_LAST_ATTEMPT_FILE = "cookie-fetch-last-attempt"
+_LOCK_FILE = "cookie-fetch.lock"
 _PAUSE_FILE = "cookie-fetch-pause.json"
 _SLEEP_REQUEST = "6.0-12.0"  # extractor's own default range; floor is 3s
 # The exact strings the installed gallery-dl emits for rate limiting (module docstring).
@@ -93,6 +118,28 @@ def cadence_refusal(last_run: datetime | None, now: datetime) -> str | None:
     )
 
 
+def attempt_refusal(last_attempt: datetime | None, now: datetime) -> str | None:
+    """None = allowed; else refusal: < 4h since the last ATTEMPT, successful or not.
+
+    The success-only cadence gate never engages while a session is broken (expired
+    cookies, extractor breakage) — this floor is what keeps a misconfigured hourly
+    job from launching a real authenticated fetch every hour in exactly the
+    repeated-broken-auth pattern that flags accounts."""
+    if last_attempt is None:
+        return None
+    elapsed = now - last_attempt
+    if elapsed >= timedelta(hours=_MIN_ATTEMPT_GAP_HOURS):
+        return None
+    next_ok = last_attempt + timedelta(hours=_MIN_ATTEMPT_GAP_HOURS)
+    return (
+        f"cookie_fetch last attempted a fetch {elapsed.total_seconds() / 3600:.1f}h "
+        f"ago and it did not succeed; refusing another attempt within "
+        f"{_MIN_ATTEMPT_GAP_HOURS}h — repeated launches with a broken session look "
+        f"bot-like (DESIGN.md §4). Fix the cause (check cookies / login), then try "
+        f"after {next_ok:%Y-%m-%d %H:%M} UTC."
+    )
+
+
 def backoff_refusal(pause_until: datetime | None, now: datetime) -> str | None:
     """None = allowed; else the refusal message naming when the 429 pause ends."""
     if pause_until is None or now >= pause_until:
@@ -115,13 +162,17 @@ def build_argv(settings: Settings) -> list[str]:
     """The exact gallery-dl invocation — argv list, NEVER shell=True or interpolation.
 
     Strictly a read-only download: gallery-dl has no like/follow/comment/DM
-    capability at all, and no extractor options (-o) are passed — the argv is
-    exactly this list (asserted byte-for-byte in tests)."""
+    capability at all, no extractor options (-o) are passed, and --config-ignore
+    keeps ambient user config (cookie export, proxy, exec postprocessors) out —
+    the behavior really is exactly this list (asserted byte-for-byte in tests).
+    The one account-scoped URL is routed through the egress gate (AGENTS.md §3a:
+    enforcement, not assertion)."""
     work = settings.resolved_work_dir
     return [
         sys.executable,
         "-m",
         "gallery_dl",
+        "--config-ignore",
         "--cookies-from-browser",
         settings.cookie_browser,
         "--sleep-request",
@@ -131,16 +182,27 @@ def build_argv(settings: Settings) -> list[str]:
         "--write-metadata",
         "--directory",
         str(work / "fetch"),
-        f"https://www.instagram.com/{settings.ig_username}/saved/",
+        assert_instagram_permalink(
+            f"https://www.instagram.com/{settings.ig_username}/saved/"
+        ),
     ]
 
 
 # ----------------------------------------------------------------- state + subprocess
 
 
-def _read_last_run(work: Path) -> datetime | None:
+def _aware(raw: str) -> datetime:
+    """ISO-8601 -> AWARE datetime. A hand-edited/corrupted state file can hold a
+    naive value ('2026-07-20T12:00:00'); comparing that against an aware UTC now
+    raises TypeError, killing every scheduled run. Assume UTC (what we always
+    write) so corrupt state degrades to a still-working guard, never a crash."""
+    dt = datetime.fromisoformat(raw)
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _read_stamp(work: Path, name: str) -> datetime | None:
     try:
-        return datetime.fromisoformat((work / _LAST_RUN_FILE).read_text().strip())
+        return _aware((work / name).read_text().strip())
     except (OSError, ValueError):
         return None
 
@@ -149,7 +211,7 @@ def _read_pause(work: Path) -> tuple[datetime | None, int | None]:
     """(pause_until, pause_days) from the state file; (None, None) when absent/corrupt."""
     try:
         data = json.loads((work / _PAUSE_FILE).read_text())
-        return datetime.fromisoformat(data["until"]), int(data["days"])
+        return _aware(data["until"]), int(data["days"])
     except (OSError, ValueError, TypeError, KeyError):
         return None, None
 
@@ -162,8 +224,11 @@ def _refuse(report: RunReport, msg: str) -> None:
 
 
 def _invoke(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    """Seam for offline tests. argv list only — shell=True is banned."""
-    return subprocess.run(argv, capture_output=True, text=True, check=False)
+    """Seam for offline tests. argv list only — shell=True is banned. The timeout
+    kills a hung fetch so it cannot hold the session open into the next run."""
+    return subprocess.run(
+        argv, capture_output=True, text=True, check=False, timeout=_SUBPROCESS_TIMEOUT
+    )
 
 
 # --------------------------------------------------------------- sidecar -> Item
@@ -185,7 +250,10 @@ def _medium(meta: dict, files: list[Path]) -> Medium:
     if len(files) > 1:
         return Medium.carousel  # one sidecar per file; several files = sidecar post
     if meta.get("video_url"):
-        return Medium.reel if meta.get("type") == "reel" else Medium.video
+        # NEVER trust gallery-dl's `type`: it calls most reels "post" (the appended
+        # audio entry defeats its len(files)==1 check, instagram.py:365-402). IGTV
+        # is /tv/; every other single-file video in a saved feed is a reel.
+        return Medium.video if "/tv/" in meta["post_url"] else Medium.reel
     return _infer_medium(meta["post_url"])  # F1 helper: /reel/, /tv/, else image
 
 
@@ -279,68 +347,97 @@ def pull(
 ) -> list[Item]:
     """Incremental read-only gallery-dl fetch of the Saved folder -> Items.
 
-    Guards run FIRST (back-off pause, then cadence) and refuse loudly. A rate-limited
-    or failed run still processes whatever was already downloaded; only a clean run
-    records the cadence timestamp and resets the 429 back-off ladder.
+    Guards run FIRST (back-off pause, success cadence, attempt floor) and refuse
+    loudly. Every real launch stamps the attempt file; only a clean run records
+    the success timestamp and resets the 429 back-off ladder. A rate-limited or
+    failed run still processes whatever was already downloaded. The whole pull
+    holds an exclusive lock — a second simultaneous run refuses instead of
+    opening a parallel Instagram session (DESIGN.md §4).
     """
     report = report if report is not None else RunReport()
     work = settings.resolved_work_dir
     work.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
 
-    pause_until, pause_days = _read_pause(work)
-    if msg := backoff_refusal(pause_until, now):
-        _refuse(report, msg)
-    if msg := cadence_refusal(_read_last_run(work), now):
-        _refuse(report, msg)
-    if not settings.ig_username or not _USERNAME.fullmatch(settings.ig_username):
-        _refuse(
-            report,
-            "SIFT_IG_USERNAME is missing or not a valid Instagram username "
-            "(letters, digits, '.', '_', max 30 chars); set it in .env — "
-            "cookie_fetch targets https://www.instagram.com/<username>/saved/",
-        )
-    if importlib.util.find_spec("gallery_dl") is None:
-        _refuse(
-            report,
-            "gallery_dl is not importable in this Python environment; reinstall "
-            "Sift's deps (`pip install -e .`) — cookie_fetch runs "
-            "`python -m gallery_dl`",
-        )
-
-    fetch_dir = work / "fetch"
-    fetch_dir.mkdir(parents=True, exist_ok=True)
+    # ponytail: fcntl = POSIX-only, fine for a personal macOS/Linux tool.
+    lock = (work / _LOCK_FILE).open("w")
     try:
-        proc = _invoke(build_argv(settings))
-    except OSError as exc:
-        _refuse(report, f"could not launch gallery-dl ({exc}); nothing fetched")
-    output = f"{proc.stdout}\n{proc.stderr}"
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        _refuse(
+            report,
+            "another cookie_fetch run is already in progress (lock held); refusing "
+            "a second parallel Instagram session (DESIGN.md §4)",
+        )
+    try:
+        pause_until, pause_days = _read_pause(work)
+        if msg := backoff_refusal(pause_until, now):
+            _refuse(report, msg)
+        if msg := cadence_refusal(_read_stamp(work, _LAST_RUN_FILE), now):
+            _refuse(report, msg)
+        if msg := attempt_refusal(_read_stamp(work, _LAST_ATTEMPT_FILE), now):
+            _refuse(report, msg)
+        if not settings.ig_username or not _USERNAME.fullmatch(settings.ig_username):
+            _refuse(
+                report,
+                "SIFT_IG_USERNAME is missing or not a valid Instagram username "
+                "(letters, digits, '.', '_', max 30 chars); set it in .env — "
+                "cookie_fetch targets https://www.instagram.com/<username>/saved/",
+            )
+        if importlib.util.find_spec("gallery_dl") is None:
+            _refuse(
+                report,
+                "gallery_dl is not importable in this Python environment; reinstall "
+                "Sift's deps (`pip install -e .`) — cookie_fetch runs "
+                "`python -m gallery_dl`",
+            )
 
-    if _RATE_LIMIT.search(output):
-        days = grow_backoff(pause_days)
-        resume = now + timedelta(days=days)
-        (work / _PAUSE_FILE).write_text(
-            json.dumps({"until": resume.isoformat(), "days": days})
-        )
-        msg = (
-            f"cookie_fetch: Instagram rate-limited this run (HTTP 429); pausing "
-            f"further runs for {days} day(s), until {resume:%Y-%m-%d %H:%M} UTC. "
-            "Items already downloaded are still processed."
-        )
-        logger.warning(msg)
-        report.errors.append(msg)
-    elif proc.returncode != 0:
-        lines = (proc.stderr or proc.stdout).strip().splitlines()
-        msg = (
-            f"cookie_fetch: gallery-dl exited {proc.returncode}"
-            f" ({lines[-1] if lines else 'no output'}); check cookies "
-            f"(--cookies-from-browser {settings.cookie_browser}) and that you are "
-            "logged in. Items already downloaded are still processed."
-        )
-        logger.warning(msg)
-        report.errors.append(msg)
-    else:
-        (work / _PAUSE_FILE).unlink(missing_ok=True)  # clean run resets back-off
-        (work / _LAST_RUN_FILE).write_text(now.isoformat())  # success only
+        fetch_dir = work / "fetch"
+        fetch_dir.mkdir(parents=True, exist_ok=True)
+        # Every real launch counts, success or not — the attempt floor reads this.
+        (work / _LAST_ATTEMPT_FILE).write_text(now.isoformat())
+        try:
+            proc = _invoke(build_argv(settings))
+        except OSError as exc:
+            _refuse(report, f"could not launch gallery-dl ({exc}); nothing fetched")
+        except subprocess.TimeoutExpired as exc:
+            proc = subprocess.CompletedProcess(
+                exc.cmd,
+                1,
+                stdout=str(exc.stdout or ""),
+                stderr=f"gallery-dl hung and was killed after "
+                f"{_SUBPROCESS_TIMEOUT}s",
+            )
+        output = f"{proc.stdout}\n{proc.stderr}"
 
-    return _items_from_sidecars(fetch_dir, settings, report)
+        if _RATE_LIMIT.search(output):
+            days = grow_backoff(pause_days)
+            resume = now + timedelta(days=days)
+            (work / _PAUSE_FILE).write_text(
+                json.dumps({"until": resume.isoformat(), "days": days})
+            )
+            msg = (
+                f"cookie_fetch: Instagram rate-limited this run (HTTP 429); pausing "
+                f"further runs for {days} day(s), until {resume:%Y-%m-%d %H:%M} UTC. "
+                "Items already downloaded are still processed."
+            )
+            logger.warning(msg)
+            report.errors.append(msg)
+        elif proc.returncode != 0:
+            lines = (proc.stderr or proc.stdout).strip().splitlines()
+            msg = (
+                f"cookie_fetch: gallery-dl exited {proc.returncode}"
+                f" ({lines[-1] if lines else 'no output'}); check cookies "
+                f"(--cookies-from-browser {settings.cookie_browser}) and that you "
+                "are logged in. Items already downloaded are still processed."
+            )
+            logger.warning(msg)
+            report.errors.append(msg)
+        else:
+            (work / _PAUSE_FILE).unlink(missing_ok=True)  # clean run resets back-off
+            (work / _LAST_RUN_FILE).write_text(now.isoformat())  # success only
+
+        return _items_from_sidecars(fetch_dir, settings, report)
+    finally:
+        lock.close()  # releases the flock

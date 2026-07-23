@@ -3,8 +3,11 @@
 `sift run --source cookie_fetch` pulls only NEW saves (gallery-dl `--download-archive`),
 read-only, from your machine and home IP. Weekly is the default cadence by design
 (DESIGN.md §4). **Over-scheduling is safe:** the cadence guard in code refuses any run
-< 20h after the last successful one, and a 429 back-off pause refuses runs until it
-expires — a misconfigured hourly job just produces refusals, never extra requests.
+< 20h after the last successful one, every attempt — even a failed one (expired
+cookies, extractor breakage) — starts a 4h floor before the next real launch, a 429
+back-off pause refuses runs until it expires, and a lock refuses a second simultaneous
+run — a misconfigured hourly job produces refusals, never an hourly stream of real
+requests, even while the session is broken.
 
 Both recipes assume the repo lives at `~/sift` with its `.venv`; adjust paths.
 
