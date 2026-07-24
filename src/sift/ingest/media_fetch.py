@@ -39,6 +39,7 @@ import fcntl
 import importlib.util
 import json
 import logging
+import re
 import shutil
 import subprocess
 import threading
@@ -89,6 +90,22 @@ def _want(chunk_ids: set[str], processed: set[str], final: bool, fetch_dir: Path
         return not any(p.name.startswith(prefix) for p in fetch_dir.glob("*.part"))
 
     return select
+
+
+def _clean_staging(got: Item, fetch_dir: Path) -> None:
+    """A processed post's downloads are spent analysis input: reclaim the disk
+    (media, metadata sidecars, split DASH streams). The gallery-dl download
+    archive still remembers the post, so nothing ever re-downloads. Anything the
+    interpreter kept was already copied into the vault by core._dispose_media."""
+    for name in got.media_files:
+        staged = Path(name)
+        if not staged.is_absolute() or fetch_dir not in staged.parents:
+            continue
+        prefix = re.split(r"[._]", staged.name, maxsplit=1)[0]
+        if len(prefix) < 8:  # post ids are long digit runs; never glob a short stem
+            continue
+        for leftover in fetch_dir.glob(f"{prefix}*"):
+            leftover.unlink(missing_ok=True)
 
 
 def _embed_ready(settings: Settings) -> str | None:
@@ -207,6 +224,7 @@ def run(settings: Settings) -> RunReport:
                 item_id, "done", f"{len(got.media_files)} media file(s)", settings
             )
             processed.add(item_id)
+            _clean_staging(got, fetch_dir)
 
         def _sweep(final: bool) -> dict[str, Item]:
             # Interim parse noise (a half-written sidecar retries next poll)

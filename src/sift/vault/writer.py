@@ -83,20 +83,49 @@ def write(note: Note, settings: Settings) -> str:
         logger.info("entertainment -> one-liner: %s", note.item.id)
         body = _one_liner(note)
     else:
-        parts: list[str] = []
-        if note.interpretation.summary:
-            parts.append(_escape_md(note.interpretation.summary))
-        if note.item.caption:
-            parts.append("## Caption\n\n" + _fence(note.item.caption))
-        if note.extraction.text and note.extraction.text != note.item.caption:
-            parts.append("## Extracted\n\n" + _fence(note.extraction.text))
-        parts.extend(f"![[{media}]]" for media in note.item.media_files)
-        body = "\n\n".join(parts)
+        body = _structured_body(note)
 
     post = frontmatter.Post(body, **to_frontmatter(note))
     _atomic_write(path, frontmatter.dumps(post) + "\n")
     storage.mark_seen(note.item.id, settings)
     return str(path)
+
+
+def _structured_body(note: Note) -> str:
+    """The note body IS the post's stand-in (the media may not be kept): summary,
+    the substance as real lists, every named resource, an assessment — then the
+    verbatim caption/extraction fenced, kept media embeds, and the source link.
+    Model-produced text is escaped plain prose; untrusted bodies stay fenced."""
+    interp = note.interpretation
+    parts: list[str] = []
+    if interp.summary:
+        parts.append(_escape_md(interp.summary))
+    if interp.key_points:
+        parts.append(
+            "## Key points\n\n"
+            + "\n".join(f"- {_escape_md(p)}" for p in interp.key_points)
+        )
+    if interp.resources:
+        lines = []
+        for r in interp.resources:
+            line = f"- **{_escape_md(r.name)}**"
+            if r.kind:
+                line += f" ({_escape_md(r.kind)})"
+            if r.detail:
+                line += f" - {_escape_md(r.detail)}"
+            lines.append(line)
+        parts.append("## Resources\n\n" + "\n".join(lines))
+    if interp.assessment:
+        parts.append("## Take\n\n" + _escape_md(interp.assessment))
+    if note.item.caption:
+        parts.append("## Caption\n\n" + _fence(note.item.caption))
+    if note.extraction.text and note.extraction.text != note.item.caption:
+        parts.append("## Extracted\n\n" + _fence(note.extraction.text))
+    parts.extend(f"![[{media}]]" for media in note.item.media_files)
+    if note.item.permalink:
+        # The permalink passed the ingest egress gate (Instagram host) — safe to link.
+        parts.append(f"[Original post]({note.item.permalink})")
+    return "\n\n".join(parts)
 
 
 def _atomic_write(path: Path, text: str) -> None:

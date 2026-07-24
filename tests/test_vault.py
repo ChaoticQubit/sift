@@ -107,6 +107,29 @@ def test_writer_idempotent_and_fenced(settings):
     assert not storage.is_new(note.item.id, settings)  # writer marked it seen
 
 
+def test_structured_body_renders_lists_and_source_link(settings):
+    from sift.models import Resource
+
+    note = _note(
+        summary="A list of 3 system design books.",
+        key_points=["DDIA covers storage internals", "SDI is interview prep"],
+        resources=[
+            Resource(name="Designing Data-Intensive Applications", kind="book"),
+            Resource(name="System Design Interview", kind="book", detail="vol 1+2"),
+        ],
+        assessment="Solid starting list; pick DDIA first.",
+    )
+    body = frontmatter.loads(Path(writer.write(note, settings)).read_text()).content
+    assert "## Key points" in body and "- DDIA covers storage internals" in body
+    assert "## Resources" in body
+    assert "- **Designing Data-Intensive Applications** (book)" in body
+    assert "(book) - vol 1\\+2" in body
+    assert "## Take" in body and "pick DDIA first" in body
+    assert "[Original post](https://www.instagram.com/reel/ABC123/)" in body
+    # Section order: substance first, verbatim caption after.
+    assert body.index("## Key points") < body.index("## Caption")
+
+
 def test_writer_refreshes_same_note_when_caption_changes(settings):
     note = _note()
     p1 = writer.write(note, settings)

@@ -73,16 +73,29 @@ class ActionItem(BaseModel):
             return v  # non-numeric: let pydantic report it
 
 
+class Resource(BaseModel):
+    """One concrete named thing a post mentions — a book, course, tool, repo, person."""
+
+    name: str
+    kind: str = ""  # book | course | tool | repo | article | person | other
+    detail: str = ""
+
+
 class Interpretation(BaseModel):
     """The interpreter agent's ONLY output — strict schema, validated before any code acts on it.
 
     This is the trust boundary between the quarantined model and privileged code (AGENTS.md §2).
     Schema validates SHAPE, not honesty: boundary code still re-forces status to "pending" on
-    every model-emitted action item and treats all values as proposals.
+    every model-emitted action item and treats all values as proposals. keep_media is only a
+    proposal too: core honors it solely for staged (downloaded) images, never videos.
     """
 
     classification: Classification = Classification.reference
     summary: str = ""
+    key_points: list[str] = []  # the post's actual substance, one point per entry
+    resources: list[Resource] = []
+    assessment: str = ""  # why it's worth (or not worth) keeping; what to do with it
+    keep_media: bool = False  # image is a dense visual reference worth reopening
     tags: list[str] = []
     action_items: list[ActionItem] = []
 

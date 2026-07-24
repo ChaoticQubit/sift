@@ -96,6 +96,25 @@ def test_process_folds_duplicate_into_existing_page_without_model_call(
     assert not storage.is_new("id-BBB", settings)  # rerun skips the dupe
 
 
+def test_reanalysis_of_own_note_is_a_refresh_not_a_merge(
+    settings, fake_model, monkeypatch
+):
+    """Re-running an item whose note is already indexed must rewrite the note,
+    never fold the item into itself as a 'duplicate'."""
+    monkeypatch.setattr(
+        "sift.extract.router.extract",
+        lambda item, s: Extraction(text=item.caption),
+    )
+    first = _write_note(settings, LONG, "AAA")
+    handle = FakeHandle([_doc(first, LONG)])  # the index serves its OWN note back
+    report = RunReport()
+    path = core.process(_item(LONG, "AAA"), settings, report, rag=handle)
+
+    assert path == first and report.merged == 0 and report.written == 1
+    assert len(fake_model.prompts) == 1  # refreshed through the full pipeline
+    assert "sources" not in frontmatter.load(first).metadata  # no self-merge
+
+
 def test_seen_text_catches_same_run_duplicates(settings, fake_model, monkeypatch):
     monkeypatch.setattr(
         "sift.extract.router.extract",

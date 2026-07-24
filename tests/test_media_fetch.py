@@ -17,7 +17,7 @@ from sift.db import storage
 from sift.guardrails.egress import EgressError
 from sift.ingest import cookie_fetch, media_fetch
 from sift.ingest.dyi_export import _item_id, canonical_permalink
-from sift.models import Extraction, IngestVia, Item, Medium
+from sift.models import Extraction, IngestVia, Interpretation, Item, Medium
 
 
 def _queued_item(shortcode: str, collection: str | None = "Recipes") -> Item:
@@ -70,11 +70,11 @@ def _clear_attempt_floor(settings):
     )
 
 
-def _write_sidecar(settings, item: Item) -> None:
+def _write_sidecar(settings, item: Item, name: str = "a.jpg") -> None:
     fetch = settings.resolved_work_dir / "fetch"
     fetch.mkdir(parents=True, exist_ok=True)
-    (fetch / "a.jpg").write_bytes(b"\xff\xd8fake-jpeg")
-    (fetch / "a.jpg.json").write_text(
+    (fetch / name).write_bytes(b"\xff\xd8fake-jpeg")
+    (fetch / f"{name}.json").write_text(
         json.dumps(
             {
                 "post_url": item.permalink,
@@ -112,6 +112,9 @@ def test_chunk_fetches_analyzes_and_preserves_provenance(
     small = settings.model_copy(update={"media_chunk_size": 2})
     _write_sidecar(settings, _queued_item("AAA"))
     _ok_invoke(monkeypatch)
+    # The interpreter judged this image a keeper — the ONLY case a download
+    # survives into the vault.
+    fake_model.result = Interpretation(summary="dense infographic", keep_media=True)
 
     report = media_fetch.run(small)
 
@@ -120,7 +123,8 @@ def test_chunk_fetches_analyzes_and_preserves_provenance(
     notes = list((settings.vault_path / "Captures").glob("*.md"))
     assert len(notes) == 1
     post = frontmatter.load(notes[0])
-    assert post.metadata["media_files"]  # real media attached
+    assert post.metadata["media_files"] == ["media/a.jpg"]  # kept vault copy
+    assert (settings.vault_path / "media" / "a.jpg").exists()
     assert post.metadata["saved_collection"] == "Recipes"  # import provenance kept
     assert post.metadata["caption"] == "caption AAA"  # payload caption wins
     assert report.written == 1
@@ -210,6 +214,31 @@ def test_profile_links_never_defer_and_never_reach_gallery_dl(
     assert invoked == []  # nothing fetchable -> gallery-dl never launched
     assert storage.media_counts(settings) == {"nomedia": 1}
     assert len(list((settings.vault_path / "Captures").glob("*.md"))) == 1
+
+
+def test_downloads_are_analysis_input_not_vault_content(
+    settings, fake_model, no_rag, offline_extract, monkeypatch
+):
+    """Default disposition: the NOTE is the keeper — no vault copy of the media,
+    a source link in the body, and the whole staging footprint reclaimed."""
+    item = _queued_item("DROP")
+    storage.enqueue_media(item, settings)
+    stem = "34567890123456789"
+    _write_sidecar(settings, item, name=f"{stem}.jpg")
+    fetch = settings.resolved_work_dir / "fetch"
+    (fetch / f"{stem}.fdash-1v.mp4").write_bytes(b"vid")  # leftover split stream
+    _ok_invoke(monkeypatch)
+
+    media_fetch.run(settings)  # default Interpretation: keep_media=False
+
+    (note,) = (settings.vault_path / "Captures").glob("*.md")
+    post = frontmatter.load(note)
+    assert post.metadata["media_files"] == []
+    assert f"[Original post]({item.permalink})" in post.content
+    media_dir = settings.vault_path / "media"
+    assert not media_dir.exists() or not any(media_dir.iterdir())
+    assert list(fetch.glob(f"{stem}*")) == []  # media + sidecar + stream reclaimed
+    assert storage.media_counts(settings) == {"done": 1}
 
 
 def test_analysis_overlaps_download(

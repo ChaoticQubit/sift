@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from .config import Settings
@@ -73,6 +74,8 @@ def process(
             dup = link.find_duplicate(text, settings, handle=rag)
         except Exception as exc:
             logger.debug("duplicate check skipped (%s)", exc)
+    if dup and f"-{hashlib.sha256(item.id.encode()).hexdigest()[:8]}.md" in dup:
+        dup = None  # its OWN note from an earlier run — a refresh, not a duplicate
     if dup:
         path = writer.merge_source(dup, item, settings)
         report.merged += 1
@@ -94,6 +97,7 @@ def process(
             report.errors.append(msg)
             report.guardrail_blocks += 1
             interpretation = Interpretation()
+    item = _dispose_media(item, interpretation, settings)
     note = Note(item=item, extraction=extraction, interpretation=interpretation)
     path = writer.write(note, settings)
     report.notes.append(path)
@@ -101,6 +105,36 @@ def process(
     if seen is not None:
         seen.add(text, path)
     return path
+
+
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+def _dispose_media(item: Item, interpretation: Interpretation, settings: Settings):
+    """Downloaded media is analysis input, not vault content: the note (summary,
+    key points, transcript, OCR text, permalink) is the keeper. A staged image is
+    copied into the vault ONLY when the interpreter judged it a dense visual
+    reference worth reopening; videos never (their substance is the transcript).
+    Vault-relative media (the captain's own DM attachments from an export) always
+    stays — only absolute staging paths are disposed."""
+    from pathlib import Path
+
+    kept: list[str] = []
+    changed = False
+    for name in item.media_files:
+        staged = Path(name)
+        if not staged.is_absolute():
+            kept.append(name)
+            continue
+        changed = True
+        if interpretation.keep_media and staged.suffix.lower() in _IMAGE_SUFFIXES:
+            media_dir = settings.vault_path / "media"
+            media_dir.mkdir(parents=True, exist_ok=True)
+            dest = media_dir / staged.name
+            dest.write_bytes(staged.read_bytes())
+            kept.append(f"media/{dest.name}")
+            logger.info("kept reference image: %s", dest.name)
+    return item.model_copy(update={"media_files": kept}) if changed else item
 
 
 def _defer_to_media_queue(item: Item, settings: Settings) -> bool:
