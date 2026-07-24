@@ -42,8 +42,6 @@ def test_run_counts_and_note_content(settings, monkeypatch, fake_model):
 
     report = core.run("dyi_export", settings, path="ignored.zip")
     assert (report.processed, report.written, report.skipped) == (2, 2, 0)
-    # reel extractor is F4: logged, item still written caption-only — never dropped.
-    assert any("fake-2" in e for e in report.errors)
     # digest is F6: noted in the report, run does not crash.
     assert any("digest" in e for e in report.errors)
 
@@ -55,3 +53,20 @@ def test_run_counts_and_note_content(settings, monkeypatch, fake_model):
     # Second run: the ledger skips everything, nothing is rewritten.
     report2 = core.run("dyi_export", settings)
     assert (report2.processed, report2.written, report2.skipped) == (2, 0, 2)
+
+
+def test_not_ready_extractor_falls_back_to_caption_only(
+    settings, monkeypatch, fake_model
+):
+    """core's future-phase fallback: a NotImplementedError extractor still writes a note."""
+    monkeypatch.setattr(
+        "sift.ingest.dyi_export.pull", lambda s, p=None, report=None: _fake_items()[:1]
+    )
+
+    def not_ready(item, s):
+        raise NotImplementedError("future phase")
+
+    monkeypatch.setattr("sift.extract.router.extract", not_ready)
+    report = core.run("dyi_export", settings, path="ignored.zip")
+    assert report.written == 1  # caption-only note, never dropped
+    assert any("not ready" in e for e in report.errors)
