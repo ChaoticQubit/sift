@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     stt_model: str = "small"
     stt_translate_to_english: bool = False
 
+    # share_capture endpoint (F7). Required for any non-loopback bind — `sift serve`
+    # refuses a LAN bind without it (anyone on the network could write into the vault).
+    capture_token: str | None = None
+
     # Ingestion. Cadence is enforced in code (cookie_fetch refuses runs <20h apart, F2),
     # not by a config string. No instagrapi flag — banned outright (CLAUDE.md rule 1).
     cookie_browser: str = "chrome"  # gallery-dl --cookies-from-browser
