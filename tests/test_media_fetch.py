@@ -41,9 +41,11 @@ def no_rag(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def have_ffmpeg(monkeypatch):
-    """These tests never touch real media; pretend ffmpeg is present."""
+def healthy_media_env(monkeypatch):
+    """These tests never touch real media or a real embedder; pretend both
+    toolchain checks pass (each has its own refusal test below)."""
     monkeypatch.setattr(media_fetch.shutil, "which", lambda name: "/fake/ffmpeg")
+    monkeypatch.setattr(media_fetch, "_embed_ready", lambda settings: None)
 
 
 @pytest.fixture
@@ -265,6 +267,14 @@ def test_missing_ffmpeg_refuses_before_burning_attempts(settings, monkeypatch):
     storage.enqueue_media(_queued_item("REELY"), settings)
     monkeypatch.setattr(media_fetch.shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="ffmpeg"):
+        media_fetch.run(settings)
+    assert storage.media_counts(settings) == {"pending": 1}  # nothing burned
+
+
+def test_dead_embedder_refuses_before_burning_attempts(settings, monkeypatch):
+    storage.enqueue_media(_queued_item("EMBED"), settings)
+    monkeypatch.setattr(media_fetch, "_embed_ready", lambda s: "HTTP 500")
+    with pytest.raises(RuntimeError, match="embedding backend"):
         media_fetch.run(settings)
     assert storage.media_counts(settings) == {"pending": 1}  # nothing burned
 

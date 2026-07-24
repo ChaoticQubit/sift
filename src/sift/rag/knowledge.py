@@ -52,6 +52,25 @@ def _knowledge(settings: Settings):
     )
 
 
+def embed_probe(settings: Settings, handle=None) -> str | None:
+    """One tiny real embedding call; returns the blocker string, or None when fine.
+
+    agno swallows per-call embed failures (logs them and returns no vectors), so a
+    down embedder silently produces an unindexed, unlinked vault (chunk-1
+    postmortem: a broken Ollama 500'd every embed and the run still reported zero
+    errors). Probe once per run and fail LOUDLY instead."""
+    try:
+        handle = handle or _knowledge(settings)
+        embedder = getattr(getattr(handle, "vector_db", None), "embedder", None)
+        if embedder is None:
+            return None  # non-standard handle (tests); nothing to probe
+        if not embedder.get_embedding("sift embedder probe"):
+            return "embedder returned an empty vector"
+        return None
+    except Exception as exc:
+        return str(exc) or type(exc).__name__
+
+
 def _embed_text(post: frontmatter.Post) -> str:
     """Compose the embed-bound copy: caption + body, PII-masked (vault verbatim)."""
     caption = str(post.metadata.get("caption", ""))

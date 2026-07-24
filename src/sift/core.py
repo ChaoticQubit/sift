@@ -16,7 +16,13 @@ def _rag(settings: Settings):
     try:
         from .rag import knowledge
 
-        return knowledge._knowledge(settings)
+        handle = knowledge._knowledge(settings)
+        if err := knowledge.embed_probe(settings, handle=handle):
+            logger.warning(
+                "embedder down (%s); dedup and graph links degraded this run", err
+            )
+            return None
+        return handle
     except Exception as exc:
         logger.debug("rag unavailable (%s); notes stay unindexed this run", exc)
         return None
@@ -181,6 +187,8 @@ def finalize(report: RunReport, settings: Settings, rag=None) -> None:
             from .rag import knowledge, link
 
             handle = rag or knowledge._knowledge(settings)
+            if err := knowledge.embed_probe(settings, handle=handle):
+                raise RuntimeError(f"embedding backend down: {err}")
             for note_path in report.notes:
                 knowledge.index_note(note_path, settings, knowledge=handle)
             link.enrich(report.notes, settings, handle=handle)

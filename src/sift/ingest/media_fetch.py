@@ -91,6 +91,18 @@ def _want(chunk_ids: set[str], processed: set[str], final: bool, fetch_dir: Path
     return select
 
 
+def _embed_ready(settings: Settings) -> str | None:
+    """Probe the embedder before committing a whole chunk — agno swallows
+    per-call embed failures, which yields a silently unlinked vault (chunk-1
+    postmortem). Returns the blocker or None; a [rag]-less install skips the
+    check (degraded by choice, not by accident)."""
+    try:
+        from ..rag import knowledge
+    except ImportError:
+        return None
+    return knowledge.embed_probe(settings)
+
+
 def _refuse(report: RunReport, msg: str) -> None:
     """Refuse loudly: RunReport-visible AND raised (never a silent empty result)."""
     logger.error("media_fetch: %s", msg)
@@ -153,6 +165,13 @@ def run(settings: Settings) -> RunReport:
                 report,
                 "ffmpeg is not installed; reel video+audio streams cannot be "
                 "merged. Install it (`brew install ffmpeg`) and rerun.",
+            )
+        if err := _embed_ready(settings):
+            _refuse(
+                report,
+                f"embedding backend is down ({err}); the whole chunk would be "
+                "analyzed without dedup or graph links. Fix the embedder (is "
+                "Ollama running?) and rerun.",
             )
 
         chunk = storage.media_chunk(settings, settings.media_chunk_size)

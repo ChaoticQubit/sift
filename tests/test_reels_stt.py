@@ -83,6 +83,27 @@ def test_missing_stt_extra_is_caption_only(settings, monkeypatch):
     assert out.text == ""  # interpret() falls back to the caption
 
 
+def test_soundless_video_is_skipped_not_crashed(settings):
+    """A reel with its audio removed used to crash PyAV's stream lookup with a
+    bare IndexError; the probe skips it cleanly — real _transcribe, no seam."""
+    import pytest
+
+    av = pytest.importorskip("av")
+    media = settings.vault_path / "media"
+    media.mkdir(parents=True, exist_ok=True)
+    silent = media / "silent.mp4"
+    with av.open(str(silent), "w") as container:
+        stream = container.add_stream("mpeg4", rate=8)
+        stream.width = stream.height = 32
+        stream.pix_fmt = "yuv420p"
+        for _ in range(3):
+            container.mux(stream.encode(av.VideoFrame(32, 32, "yuv420p")))
+        container.mux(stream.encode(None))
+
+    out = reels_stt.extract(_item(media_files=["media/silent.mp4"]), settings)
+    assert out.text == "" and out.confidence is None and out.artifacts == {}
+
+
 def test_router_dispatches_reel_and_video(settings, monkeypatch):
     marker = object()
     monkeypatch.setattr("sift.extract.reels_stt.extract", lambda i, s: marker)
