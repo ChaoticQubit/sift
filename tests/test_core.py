@@ -42,8 +42,9 @@ def test_run_counts_and_note_content(settings, monkeypatch, fake_model):
 
     report = core.run("dyi_export", settings, path="ignored.zip")
     assert (report.processed, report.written, report.skipped) == (2, 2, 0)
-    # digest is F6: noted in the report, run does not crash.
-    assert any("digest" in e for e in report.errors)
+    # F6: the digest is refreshed on every run, not an error.
+    assert (settings.vault_path / "Action Review.md").exists()
+    assert not any("digest" in e for e in report.errors)
 
     posts = [frontmatter.loads(Path(p).read_text()) for p in report.notes]
     for post in posts:

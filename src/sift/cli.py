@@ -38,5 +38,13 @@ def index(rebuild: bool = False) -> None:
     knowledge.build(load_settings(), rebuild=rebuild)
 
 
+@app.command()
+def review() -> None:
+    """Refresh Action Review.md (applies your confirm/dismiss checkboxes first)."""
+    from .review import digest
+
+    typer.echo(digest.refresh(load_settings()))
+
+
 if __name__ == "__main__":
     app()
