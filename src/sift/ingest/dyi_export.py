@@ -44,6 +44,17 @@ from ..models import IngestVia, Item, Medium, RunReport
 
 logger = logging.getLogger(__name__)
 
+# Meta system-message stand-ins that carry no user content (observed in a real
+# 2026-07 export; extend as new ones surface).
+_PLACEHOLDER_TEXTS = {
+    "You sent an attachment.",
+    "You shared a story.",
+    "Liked a message",
+}
+
+# Quiet-skip sentinel: counted, but not a per-entry error like the None path.
+_SKIP_QUIET = object()
+
 _SAVED = "your_instagram_activity/saved/saved_posts.json"
 _SAVED_HTML = "your_instagram_activity/saved/saved_posts.html"
 _COLLECTIONS = "your_instagram_activity/saved/saved_collections.json"
@@ -329,7 +340,7 @@ def _message_item(
     source_export: str,
     counts: Counter,
     report: RunReport,
-) -> Item | None:
+) -> Item | None | object:
     ts_ms = msg.get("timestamp_ms")
     when = _utc_date(ts_ms / 1000) if ts_ms else None
     common = dict(
@@ -358,6 +369,11 @@ def _message_item(
             **common,
         )
     if msg.get("content"):
+        if msg["content"].strip() in _PLACEHOLDER_TEXTS:
+            # Meta's stand-in for an attachment the export doesn't carry — pure
+            # noise (a real export held 200 of these). Quiet count, no note.
+            counts["placeholder_messages"] += 1
+            return _SKIP_QUIET
         return Item(
             id=_item_id(msg["content"], str(ts_ms)),
             medium=Medium.text,
@@ -410,21 +426,25 @@ def pull(
                 logger.warning("dyi_export: %s", note)
                 report.errors.append(f"dyi_export: {note}")
                 continue
+            if item is _SKIP_QUIET:
+                continue
             if item is None:
                 counts["skipped_entries"] += 1
                 note = "self-thread message with no share/text/media; entry skipped"
                 logger.warning("dyi_export: %s", note)
                 report.errors.append(f"dyi_export: {note}")
             else:
-                items.append(item)
+                items.append(item)  # type: ignore[arg-type]
     items.extend(_saved_items(root, source_export, counts, report))
 
     report.media_missing += counts["media_missing"]
     logger.info(
-        "dyi_export: %d items from %s (%d entries skipped, %d media missing)",
+        "dyi_export: %d items from %s (%d entries skipped, %d media missing, "
+        "%d placeholder messages dropped)",
         len(items),
         source_export,
         counts["skipped_entries"],
         counts["media_missing"],
+        counts["placeholder_messages"],
     )
     return items

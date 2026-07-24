@@ -28,6 +28,7 @@ import frontmatter
 
 from ..config import Settings
 from ..guardrails.pii import mask_for_model
+from ..vault import writer
 from . import knowledge as kn
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ def enrich(note_paths: list[str], settings: Settings, handle=None) -> int:
         body = _RELATED_SPLIT.split(post.content)[0]
         links = "\n".join(f"- [[{s}]]" for s in stems)
         post.content = f"{body}\n\n{_RELATED_MARK}\n\n{links}"
-        path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+        writer._atomic_write(path, frontmatter.dumps(post) + "\n")
         linked += 1
     return linked
 

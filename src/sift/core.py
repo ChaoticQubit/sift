@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlsplit
 
 from .config import Settings
 from .models import Extraction, Interpretation, Item, Note, RunReport
@@ -100,14 +99,16 @@ def process(
 
 def _defer_to_media_queue(item: Item, settings: Settings) -> bool:
     """True when this item should wait for the chunked media backfill instead of
-    being interpreted caption-only: an Instagram permalink with no media on disk.
-    One model call per item — the chunk run analyzes it WITH its media (OCR/STT)."""
-    from .guardrails.egress import is_instagram_host
+    being interpreted caption-only: an Instagram POST permalink with no media on
+    disk. Post-shaped URLs only — a shared PROFILE link must never reach the
+    fetch queue (gallery-dl would pull the whole feed); it gets a normal caption
+    note instead. One model call per item — the chunk run analyzes it WITH its
+    media (OCR/STT)."""
+    from .guardrails.egress import is_instagram_post_url
 
     if not settings.media_defer or item.media_files or not item.permalink:
         return False
-    host = urlsplit(item.permalink).hostname
-    return bool(host) and is_instagram_host(host)
+    return is_instagram_post_url(item.permalink)
 
 
 def run(

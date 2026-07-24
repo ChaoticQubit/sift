@@ -355,3 +355,10 @@ def test_end_to_end_core_run(settings, dyi_zip, fake_model):
     # Re-run: the ledger skips everything, nothing rewritten.
     report2 = core.run("dyi_export", settings, path=str(dyi_zip))
     assert (report2.processed, report2.written, report2.skipped) == (6, 0, 6)
+
+
+def test_placeholder_messages_dropped_quietly(settings, dyi_zip):
+    """Meta's "You sent an attachment." stand-ins become neither items nor errors."""
+    items, report = _pull(settings, dyi_zip)
+    assert not any("You sent an attachment" in i.caption for i in items)
+    assert not any("no share/text/media" in e for e in report.errors)
