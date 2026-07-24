@@ -13,12 +13,41 @@ app = typer.Typer(help="Sift — Instagram saves -> local second brain")
 
 
 @app.command()
-def run(source: str = "cookie_fetch", path: Optional[Path] = None) -> None:
+def run(
+    source: str = "cookie_fetch",
+    path: Optional[Path] = None,
+    defer_media: Optional[bool] = typer.Option(
+        None,
+        "--defer-media/--no-defer-media",
+        help="Queue Instagram items without media bytes for chunked fetching "
+        "instead of caption-only analysis (default: SIFT_MEDIA_DEFER).",
+    ),
+) -> None:
     """Ingest + process. source: cookie_fetch | share_capture | dyi_export."""
     from . import core
 
-    report = core.run(source, load_settings(), str(path) if path else None)
+    report = core.run(
+        source, load_settings(), str(path) if path else None, defer_media=defer_media
+    )
     typer.echo(report.model_dump_json(indent=2))
+
+
+@app.command()
+def fetch_media() -> None:
+    """Fetch real media for one even chunk of queued items, then fully analyze them.
+
+    Schedulable daily until the queue drains; progress is auditable in the
+    media_queue table of <work_dir>/ledger.db.
+    """
+    import json as _json
+
+    from .db import storage
+    from .ingest import media_fetch
+
+    settings = load_settings()
+    report = media_fetch.run(settings)
+    typer.echo(report.model_dump_json(indent=2))
+    typer.echo(_json.dumps({"media_queue": storage.media_counts(settings)}))
 
 
 @app.command()

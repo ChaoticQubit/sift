@@ -97,6 +97,8 @@ class RunReport(BaseModel):
     processed: int = 0
     written: int = 0
     skipped: int = 0
+    deferred: int = 0  # queued for the chunked media backfill (ingest/media_fetch)
+    merged: int = 0  # near-duplicates folded into an existing page (rag/link.py)
     media_missing: int = 0
     guardrail_blocks: int = 0
     notes: list[str] = []
