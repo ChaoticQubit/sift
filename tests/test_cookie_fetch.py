@@ -367,12 +367,10 @@ def test_sidecar_mapping_caption_medium_date_media(ig_settings, fake_gdl):
     assert single.medium is Medium.image
     assert single.saved_at == date(2026, 7, 15)
     assert single.ingest_via.value == "cookie_fetch"
-    assert single.media_files == ["media/single.jpg"]
-    assert (
-        (ig_settings.vault_path / "media" / "single.jpg")
-        .read_bytes()
-        .startswith(b"\xff\xd8")
-    )
+    # Staged in place, NOT copied into the vault — core._dispose_media decides
+    # at note-writing time whether the vault keeps anything.
+    assert single.media_files == [str(_work(ig_settings) / "fetch" / "single.jpg")]
+    assert not (ig_settings.vault_path / "media" / "single.jpg").exists()
 
     reel = by_link["https://www.instagram.com/reel/REEL0001/"]
     assert reel.medium is Medium.reel
@@ -380,7 +378,8 @@ def test_sidecar_mapping_caption_medium_date_media(ig_settings, fake_gdl):
 
     carousel = by_link["https://www.instagram.com/p/CAROUSEL1/"]
     assert carousel.medium is Medium.carousel
-    assert carousel.media_files == ["media/car_1.jpg", "media/car_2.jpg"]
+    fetch = _work(ig_settings) / "fetch"
+    assert carousel.media_files == [str(fetch / "car_1.jpg"), str(fetch / "car_2.jpg")]
     assert report.guardrail_blocks == 0
 
 

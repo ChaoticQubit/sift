@@ -71,7 +71,6 @@ from ..models import IngestVia, Item, Medium, RunReport
 
 # Deliberate sibling reuse (house F1 helpers), not an abstraction layer.
 from .dyi_export import (
-    _copy_media,
     _fix_mojibake,
     _infer_medium,
     _item_id,
@@ -329,13 +328,10 @@ def _items_from_sidecars(
                 caption=_fix_mojibake(meta.get("description") or ""),
                 ingest_via=IngestVia.cookie_fetch,
                 saved_at=_post_date(meta),
-                media_files=_copy_media(
-                    fetch_dir,
-                    [f.relative_to(fetch_dir).as_posix() for f in files],
-                    settings,
-                    counts,
-                    report,
-                ),
+                # Staged absolute paths, NOT vault copies: extraction reads them in
+                # place and core._dispose_media decides what (if anything) the vault
+                # keeps — the note is the keeper, not the download.
+                media_files=[str(f) for f in files],
                 raw={"username": meta.get("username", "")},
             )
         )
