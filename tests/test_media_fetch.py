@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
+import time
 from datetime import date
 
 import frontmatter
@@ -200,6 +202,53 @@ def test_profile_links_never_defer_and_never_reach_gallery_dl(
     assert invoked == []  # nothing fetchable -> gallery-dl never launched
     assert storage.media_counts(settings) == {"nomedia": 1}
     assert len(list((settings.vault_path / "Captures").glob("*.md"))) == 1
+
+
+def test_analysis_overlaps_download(
+    settings, fake_model, no_rag, offline_extract, monkeypatch
+):
+    """The pipeline: a landed post is analyzed WHILE gallery-dl still runs."""
+    storage.enqueue_media(_queued_item("LIVE"), settings)
+    monkeypatch.setattr(media_fetch, "_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(media_fetch, "_SETTLE_SECONDS", 0.0)
+    captures = settings.vault_path / "Captures"
+
+    def slow_invoke(argv):
+        # "Download" LIVE's post, then keep the fake gallery-dl alive until the
+        # main thread has written its note — proof of overlap, not sequencing.
+        _write_sidecar(settings, _queued_item("LIVE"))
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if list(captures.glob("*.md")):
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            time.sleep(0.05)
+        raise AssertionError("note never appeared while download still running")
+
+    monkeypatch.setattr(cookie_fetch, "_invoke", slow_invoke)
+    report = media_fetch.run(settings)
+    assert report.written == 1 and report.processed == 1
+    assert storage.media_counts(settings) == {"done": 1}
+
+
+def test_want_holds_back_unsettled_and_processed_posts(settings, tmp_path):
+    canon = canonical_permalink("https://www.instagram.com/p/ZZZ/")
+    f = tmp_path / "123_1.jpg"
+    f.write_bytes(b"x")
+
+    fresh = media_fetch._want(set(), False, tmp_path)
+    assert not fresh(canon, [f])  # just landed: inside the settle window
+
+    old = time.time() - 3600
+    os.utime(f, (old, old))
+    assert media_fetch._want(set(), False, tmp_path)(canon, [f])  # settled
+
+    (tmp_path / "123_2.mp4.part").write_bytes(b"")
+    assert not media_fetch._want(set(), False, tmp_path)(canon, [f])  # in flight
+
+    done = {_item_id(canon, "")}
+    assert not media_fetch._want(done, False, tmp_path)(canon, [f])
+    assert not media_fetch._want(done, True, tmp_path)(canon, [f])  # even final
+    assert media_fetch._want(set(), True, tmp_path)(canon, [f])  # final: no settle
 
 
 def test_build_argv_gates_every_chunk_url(settings):
