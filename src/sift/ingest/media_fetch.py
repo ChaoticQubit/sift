@@ -7,6 +7,12 @@ chunks: download the real media per permalink, then run the ONE extract ->
 interpret -> write pass per item WITH its media (OCR/STT included) — one model
 call per item, never two.
 
+Download and analysis are PIPELINED: gallery-dl runs in a background thread
+while the main thread analyzes each post as soon as it has fully landed
+(settle heuristic in _want), so chunk wall time is max(download, analysis)
+rather than their sum. Downloads themselves stay strictly serial — one paced
+gallery-dl session, per the safety envelope below.
+
 Progress is durable and manually auditable in the media_queue table of
 <work_dir>/ledger.db (db/storage.py):
     sqlite3 <work_dir>/ledger.db "SELECT status, COUNT(*) FROM media_queue GROUP BY status"
@@ -34,12 +40,16 @@ import importlib.util
 import json
 import logging
 import subprocess
+import threading
+import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from ..config import Settings
 from ..guardrails.egress import is_instagram_post_url
 from ..models import Item, RunReport
 from . import cookie_fetch
+from .dyi_export import _item_id
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +57,32 @@ logger = logging.getLogger(__name__)
 # item is written caption-only (status 'nomedia') instead of clogging the queue.
 _MAX_ATTEMPTS = 3
 _LAST_ATTEMPT_FILE = "media-fetch-last-attempt"
+# Pipelining cadence: how often the main thread looks for newly landed posts.
+_POLL_SECONDS = 10.0
+# A post is safe to analyze mid-download once nothing of it changed for this
+# long (carousel files arrive 6-12s apart) and no sibling .part is in flight.
+_SETTLE_SECONDS = 60.0
+
+
+def _want(processed: set[str], final: bool, fetch_dir: Path):
+    """Sidecar filter for cookie_fetch._items_from_sidecars: never re-parse an
+    already-analyzed post; mid-run, pass only posts that look fully downloaded.
+
+    ponytail: settle heuristic (quiet window + no matching .part file). A post
+    it wrongly holds back just waits for the final sweep — never lost."""
+
+    def select(canon: str, files: list[Path]) -> bool:
+        if _item_id(canon, "") in processed:
+            return False
+        if final:
+            return True
+        stamps = [f.stat().st_mtime for f in files if f.exists()]
+        if not stamps or time.time() - max(stamps) < _SETTLE_SECONDS:
+            return False
+        prefix = files[0].name.split("_")[0]  # "<postid>_<mediaid>.<ext>"
+        return not any(p.name.startswith(prefix) for p in fetch_dir.glob("*.part"))
+
+    return select
 
 
 def _refuse(report: RunReport, msg: str) -> None:
@@ -116,15 +152,83 @@ def run(settings: Settings) -> RunReport:
         # shared profile link) is closed out caption-only in the loop below.
         post_urls = [row[1] for row in chunk if is_instagram_post_url(row[1])]
         logger.info("media_fetch: fetching chunk of %d permalink(s)", len(post_urls))
+        rag = core._rag(settings)
+        seen = core._seen(settings)
+        processed: set[str] = set()
+
+        def _analyze(item_id: str, queued: Item, got: Item) -> None:
+            # The sidecar knows media truth (files, carousel/reel medium); the
+            # queued payload keeps import provenance (collection, saved date,
+            # export name, original caption).
+            merged = queued.model_copy(
+                update={
+                    "media_files": got.media_files,
+                    "medium": got.medium,
+                    "caption": queued.caption or got.caption,
+                }
+            )
+            core.process(merged, settings, report, rag=rag, seen=seen)
+            storage.media_mark(
+                item_id, "done", f"{len(got.media_files)} media file(s)", settings
+            )
+            processed.add(item_id)
+
+        def _sweep(final: bool) -> dict[str, Item]:
+            # Interim parse noise (a half-written sidecar retries next poll)
+            # goes to a scratch report; the final sweep records problems once.
+            fetched = {
+                i.id: i
+                for i in cookie_fetch._items_from_sidecars(
+                    fetch_dir,
+                    settings,
+                    report if final else RunReport(),
+                    select=_want(processed, final, fetch_dir),
+                )
+            }
+            if not final:
+                for item_id, permalink, payload, _attempts in chunk:
+                    got = fetched.get(item_id)
+                    if (
+                        item_id not in processed
+                        and is_instagram_post_url(permalink)
+                        and got is not None
+                        and got.media_files
+                    ):
+                        report.processed += 1
+                        _analyze(item_id, Item.model_validate_json(payload), got)
+            return fetched
+
         proc = subprocess.CompletedProcess([], 0, "", "")
         if post_urls:
-            try:
-                proc = cookie_fetch._invoke(
-                    cookie_fetch.build_argv(settings, post_urls)
-                )
-            except OSError as exc:
+            argv = cookie_fetch.build_argv(settings, post_urls)
+            box: dict = {}
+
+            def _download() -> None:
+                try:
+                    box["proc"] = cookie_fetch._invoke(argv)
+                except BaseException as exc:  # re-raised on the main thread
+                    box["exc"] = exc
+
+            # Downloads run in a thread; analysis of already-landed posts runs
+            # HERE on the main thread while the rest of the chunk downloads —
+            # wall time is max(download, analysis), not their sum.
+            thread = threading.Thread(target=_download, name="gallery-dl", daemon=True)
+            thread.start()
+            sidecars = -1
+            polls = 0
+            while thread.is_alive():
+                thread.join(timeout=_POLL_SECONDS)
+                if not thread.is_alive():
+                    break
+                polls += 1
+                count = sum(1 for _ in fetch_dir.rglob("*.json"))
+                if count != sidecars or polls % 6 == 0:  # new posts, or catch-up
+                    sidecars = count
+                    _sweep(final=False)
+            exc = box.get("exc")
+            if isinstance(exc, OSError):
                 _refuse(report, f"could not launch gallery-dl ({exc}); nothing fetched")
-            except subprocess.TimeoutExpired as exc:
+            elif isinstance(exc, subprocess.TimeoutExpired):
                 proc = subprocess.CompletedProcess(
                     exc.cmd,
                     1,
@@ -132,6 +236,10 @@ def run(settings: Settings) -> RunReport:
                     stderr="gallery-dl hung and was killed after "
                     f"{cookie_fetch._SUBPROCESS_TIMEOUT}s",
                 )
+            elif exc is not None:
+                raise exc  # unexpected: surface loudly (lock released in finally)
+            else:
+                proc = box["proc"]
         output = f"{proc.stdout}\n{proc.stderr}"
 
         rate_limited = bool(cookie_fetch._RATE_LIMIT.search(output))
@@ -163,13 +271,10 @@ def run(settings: Settings) -> RunReport:
             # Clean chunk resets the SHARED back-off ladder, like cookie_fetch.
             (work / cookie_fetch._PAUSE_FILE).unlink(missing_ok=True)
 
-        fetched = {
-            i.id: i
-            for i in cookie_fetch._items_from_sidecars(fetch_dir, settings, report)
-        }
-        rag = core._rag(settings)
-        seen = core._seen(settings)
+        fetched = _sweep(final=True)
         for item_id, permalink, payload, attempts in chunk:
+            if item_id in processed:
+                continue  # analyzed mid-download by the pipeline
             report.processed += 1
             queued = Item.model_validate_json(payload)
             if not is_instagram_post_url(permalink):
@@ -186,20 +291,7 @@ def run(settings: Settings) -> RunReport:
                 continue
             got = fetched.get(item_id)
             if got is not None and got.media_files:
-                # The sidecar knows media truth (files, carousel/reel medium); the
-                # queued payload keeps import provenance (collection, saved date,
-                # export name, original caption).
-                merged = queued.model_copy(
-                    update={
-                        "media_files": got.media_files,
-                        "medium": got.medium,
-                        "caption": queued.caption or got.caption,
-                    }
-                )
-                core.process(merged, settings, report, rag=rag, seen=seen)
-                storage.media_mark(
-                    item_id, "done", f"{len(got.media_files)} media file(s)", settings
-                )
+                _analyze(item_id, queued, got)
             elif rate_limited:
                 pass  # not the post's fault — retry next chunk, attempts unchanged
             elif attempts + 1 >= _MAX_ATTEMPTS:
