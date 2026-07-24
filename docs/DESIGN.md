@@ -167,7 +167,7 @@ source_export: instagram-2026-07-20
 tags: [recipe, dessert]
 ```
 
-**Body:** LLM summary → `## Caption` (verbatim text, **inside a fenced code block** — Obsidian renders markdown, and a verbatim `![](http://attacker/pixel.png)` in a caption would otherwise become a tracking beacon and `[text](http://phish)` a live link; fencing preserves every byte while defanging rendering) → `## Extracted` (transcript / OCR / article text, same fencing) → media embed. **Classification routing:** educational/reference → full note; entertainment → one-liner. **Idempotency:** stable id = hash(permalink) + saved_at; dedup ledger in `.sift/`.
+**Body:** LLM summary → `## Caption` (verbatim text, **inside a fenced code block** — Obsidian renders markdown, and a verbatim `![](http://attacker/pixel.png)` in a caption would otherwise become a tracking beacon and `[text](http://phish)` a live link; fencing preserves every byte while defanging rendering) → `## Extracted` (transcript / OCR / article text, same fencing) → media embed. **Classification routing:** educational/reference → full note; entertainment → one-liner. **Idempotency:** stable id = sha256 of the canonical permalink (`/reel/`, `/reels/`, `/tv/` folded into `/p/`; date-free so the same post arriving via export AND fetch dedups to one note — decided 2026-07-23); permalink-less text notes hash text + timestamp; dedup ledger in `.sift/`.
 
 ---
 

@@ -43,6 +43,32 @@ class EgressError(Exception):
     """A fetch was refused by the SSRF egress policy."""
 
 
+# The account-scoped fetchers (gallery-dl / yt-dlp) may touch ONLY Instagram and its
+# CDNs (AGENTS.md §3a — enforced in code at F2, not assumed from tool defaults).
+_INSTAGRAM_HOSTS = ("instagram.com", "cdninstagram.com", "fbcdn.net")
+
+
+def is_instagram_host(host: str) -> bool:
+    """Subdomain-aware suffix match on dot boundaries, never a substring check:
+    scontent.cdninstagram.com passes; evil-instagram.com.attacker.net does not."""
+    host = host.lower().rstrip(".")
+    return any(host == h or host.endswith("." + h) for h in _INSTAGRAM_HOSTS)
+
+
+def assert_instagram_permalink(url: str) -> str:
+    """Every future yt-dlp invocation MUST route its URL through this gate (AGENTS.md
+    §3a); cookie_fetch uses the same host test on every recorded/downloaded URL.
+    Returns the url unchanged or raises EgressError."""
+    split = urlsplit(url)
+    if split.scheme not in ("http", "https"):
+        raise EgressError(f"non-http(s) URL refused for account-scoped fetcher: {url}")
+    if not split.hostname or not is_instagram_host(split.hostname):
+        raise EgressError(
+            f"non-Instagram URL refused for account-scoped fetcher: {url}"
+        )
+    return url
+
+
 def _is_public(ip: str) -> bool:
     addr = ipaddress.ip_address(ip)
     if isinstance(addr, ipaddress.IPv6Address):

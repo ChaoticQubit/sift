@@ -30,8 +30,10 @@ import zipfile
 from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from ..config import Settings
+from ..guardrails.egress import is_instagram_host
 from ..models import IngestVia, Item, Medium, RunReport
 
 logger = logging.getLogger(__name__)
@@ -73,8 +75,26 @@ def _utc_date(epoch_s: float) -> date:
     return datetime.fromtimestamp(epoch_s, tz=timezone.utc).date()
 
 
+def canonical_permalink(link: str) -> str:
+    """One post, one id: for Instagram permalinks, drop query/fragment junk
+    (?igsh=... share tokens), normalize the trailing slash, AND fold /reel/,
+    /reels/, /tv/ into /p/ — shortcodes share one namespace, and gallery-dl
+    emits /p/<code>/ for most reels (its appended audio entry defeats the
+    len(files)==1 reel check, instagram.py:365-402) while the DYI export and
+    DM shares use /reel/<code>/. Without the fold the same saved reel gets two
+    ids and two notes. Non-Instagram links (DM'd articles etc.) keep their
+    query — it may be identity there."""
+    split = urlsplit(link)
+    if split.hostname and is_instagram_host(split.hostname):
+        path = re.sub(r"^/(?:reel|reels|tv)/", "/p/", split.path)
+        return f"{split.scheme}://{split.netloc}{path.rstrip('/')}/"
+    return link
+
+
 def _item_id(key: str, when: str) -> str:
-    """Stable id: sha256 of permalink + ISO date (or text/uri + timestamp)."""
+    """Stable id: sha256 of the canonical permalink (date-free, so export and
+    cookie_fetch dedup to one note) or, for permalink-less items, text/uri + timestamp.
+    """
     return hashlib.sha256(f"{key}{when}".encode()).hexdigest()
 
 
@@ -117,7 +137,7 @@ def _saved_items(
         saved_at = _utc_date(ts) if ts else None
         items.append(
             Item(
-                id=_item_id(href, saved_at.isoformat() if saved_at else ""),
+                id=_item_id(canonical_permalink(href), ""),
                 permalink=href,
                 medium=_infer_medium(href),
                 caption="",  # the saved list genuinely carries no caption
@@ -251,7 +271,7 @@ def _message_item(
     if share.get("link"):
         link = share["link"]
         return Item(
-            id=_item_id(link, when.isoformat() if when else ""),
+            id=_item_id(canonical_permalink(link), ""),
             permalink=link,
             medium=_infer_medium(link),
             caption=share.get("share_text") or "",  # share_text IS the caption
@@ -309,8 +329,8 @@ def pull(
     counts: Counter = Counter()
 
     # Self-thread items FIRST: a self-DM share and a saved entry of the same
-    # permalink on the same UTC day share one id, and the ledger keeps the first
-    # occurrence — the DM share carries the caption, the saved list never does.
+    # permalink share one id (permalink-keyed, date-free), and the ledger keeps
+    # the first occurrence — the DM share carries the caption, the saved list never does.
     items: list[Item] = []
     for f in _self_thread_files(root, report):
         for msg in _load_json(f).get("messages", []):

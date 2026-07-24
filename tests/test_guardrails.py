@@ -277,6 +277,35 @@ def test_redirect_loop_capped(monkeypatch):
         egress.guarded_fetch("https://example.com/", max_redirects=3)
 
 
+# ------------------------------------------------- instagram host scope (F2, §3a)
+
+
+def test_is_instagram_host_suffix_match_not_substring():
+    assert egress.is_instagram_host("instagram.com")
+    assert egress.is_instagram_host("www.instagram.com")
+    assert egress.is_instagram_host("scontent.cdninstagram.com")
+    assert egress.is_instagram_host("scontent-lga3-1.xx.fbcdn.net")
+    assert egress.is_instagram_host("Instagram.COM.")  # case + trailing dot
+    # substring lookalikes must FAIL (subdomain-aware suffix, dot boundary)
+    assert not egress.is_instagram_host("evil-instagram.com.attacker.net")
+    assert not egress.is_instagram_host("instagram.com.evil.net")
+    assert not egress.is_instagram_host("notinstagram.com")
+    assert not egress.is_instagram_host("fbcdn.net.evil.io")
+
+
+def test_assert_instagram_permalink_gate():
+    url = "https://www.instagram.com/reel/ABC123/"
+    assert egress.assert_instagram_permalink(url) == url
+    for bad in (
+        "https://example.com/p/x/",
+        "https://evil-instagram.com.attacker.net/p/x/",
+        "ftp://www.instagram.com/p/x/",
+        "file:///etc/passwd",
+    ):
+        with pytest.raises(egress.EgressError):
+            egress.assert_instagram_permalink(bad)
+
+
 # ------------------------------------------------------------------------------ agent
 
 

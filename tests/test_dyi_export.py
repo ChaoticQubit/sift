@@ -179,8 +179,9 @@ def test_media_uri_directory_or_dotdot_does_not_crash(settings, tmp_path):
 
 
 def test_self_share_caption_wins_id_collision(settings, tmp_path, fake_model):
-    """Save + self-DM the same reel the same UTC day -> one id. The caption-bearing
-    DM share must be the occurrence the ledger keeps (captions are first-class)."""
+    """Save + self-DM the same reel -> one id (permalink-keyed, date-free — F2 dedup).
+    The caption-bearing DM share must be the occurrence the ledger keeps
+    (captions are first-class)."""
     link = "https://www.instagram.com/reel/SAMEDAY01/"
     zp = tmp_path / "instagram-collide.zip"
     with zipfile.ZipFile(zp, "w") as zf:
