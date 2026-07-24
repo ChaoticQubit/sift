@@ -60,6 +60,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -259,9 +260,16 @@ def _medium(meta: dict, files: list[Path]) -> Medium:
 
 
 def _items_from_sidecars(
-    fetch_dir: Path, settings: Settings, report: RunReport
+    fetch_dir: Path,
+    settings: Settings,
+    report: RunReport,
+    select: Callable[[str, list[Path]], bool] | None = None,
 ) -> list[Item]:
     """Parse every metadata sidecar under fetch/ into Items, host-checked.
+
+    select(canonical_permalink, fetch_files) filters posts BEFORE their media is
+    copied into the vault — media_fetch pipelines with it (skips posts still
+    downloading or already analyzed, so interim rescans stay cheap).
 
     Old sidecars from previous runs re-parse harmlessly: the dedup ledger skips
     already-written ids in core.run. Nothing is silently dropped — every rejected
@@ -311,6 +319,8 @@ def _items_from_sidecars(
     items: list[Item] = []
     for canon, group in posts.items():
         meta, files = group["meta"], sorted(group["files"])
+        if select is not None and not select(canon, files):
+            continue
         items.append(
             Item(
                 id=_item_id(canon, ""),  # F1 convention: dedups with dyi_export
