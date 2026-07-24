@@ -90,8 +90,12 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
             logger.warning(msg)
             report.errors.append(msg)
 
+    # The digest is derived state like the index: failure is logged and counted,
+    # never fatal — `sift review` regenerates it.
     try:
         digest.refresh(settings)
-    except NotImplementedError:
-        report.errors.append("action-review digest not built yet (F6); refresh skipped")
+    except Exception as exc:
+        msg = f"action-review digest refresh failed ({exc}); notes written"
+        logger.warning(msg)
+        report.errors.append(msg)
     return report
