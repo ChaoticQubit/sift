@@ -38,7 +38,15 @@ def _transcribe(path: str, settings: Settings) -> tuple[str, str, float]:
 
     Imports faster-whisper lazily: it lives in the [stt] extra (pyproject).
     """
+    import av
     from faster_whisper import WhisperModel
+
+    # A soundless video (reel with removed audio) crashes PyAV's stream lookup
+    # inside faster-whisper with a bare IndexError; probe first and say why.
+    with av.open(path) as container:
+        if not container.streams.audio:
+            logger.info("reels_stt: %s has no audio stream; nothing to transcribe", path)
+            return "", "", 1.0
 
     model = _MODELS.get(settings.stt_model)
     if model is None:

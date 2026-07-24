@@ -39,6 +39,7 @@ import fcntl
 import importlib.util
 import json
 import logging
+import shutil
 import subprocess
 import threading
 import time
@@ -64,18 +65,23 @@ _POLL_SECONDS = 10.0
 _SETTLE_SECONDS = 60.0
 
 
-def _want(processed: set[str], final: bool, fetch_dir: Path):
+def _want(chunk_ids: set[str], processed: set[str], final: bool, fetch_dir: Path):
     """Sidecar filter for cookie_fetch._items_from_sidecars: never re-parse an
-    already-analyzed post; mid-run, pass only posts that look fully downloaded.
+    already-analyzed post; mid-run, pass only THIS chunk's posts that look fully
+    downloaded (the fetch dir keeps prior chunks' sidecars — rescanning those
+    every poll would re-copy their media for nothing).
 
     ponytail: settle heuristic (quiet window + no matching .part file). A post
     it wrongly holds back just waits for the final sweep — never lost."""
 
     def select(canon: str, files: list[Path]) -> bool:
-        if _item_id(canon, "") in processed:
+        item_id = _item_id(canon, "")
+        if item_id in processed:
             return False
         if final:
             return True
+        if item_id not in chunk_ids:
+            return False
         stamps = [f.stat().st_mtime for f in files if f.exists()]
         if not stamps or time.time() - max(stamps) < _SETTLE_SECONDS:
             return False
@@ -83,6 +89,18 @@ def _want(processed: set[str], final: bool, fetch_dir: Path):
         return not any(p.name.startswith(prefix) for p in fetch_dir.glob("*.part"))
 
     return select
+
+
+def _embed_ready(settings: Settings) -> str | None:
+    """Probe the embedder before committing a whole chunk — agno swallows
+    per-call embed failures, which yields a silently unlinked vault (chunk-1
+    postmortem). Returns the blocker or None; a [rag]-less install skips the
+    check (degraded by choice, not by accident)."""
+    try:
+        from ..rag import knowledge
+    except ImportError:
+        return None
+    return knowledge.embed_probe(settings)
 
 
 def _refuse(report: RunReport, msg: str) -> None:
@@ -139,6 +157,22 @@ def run(settings: Settings) -> RunReport:
                 "gallery_dl is not importable in this Python environment; reinstall "
                 "Sift's deps (`pip install -e .`)",
             )
+        if shutil.which("ffmpeg") is None:
+            # Reels arrive as separate DASH video+audio streams; without ffmpeg
+            # they never merge into the file the sidecar names, so every reel in
+            # the chunk would silently burn an attempt toward caption-only.
+            _refuse(
+                report,
+                "ffmpeg is not installed; reel video+audio streams cannot be "
+                "merged. Install it (`brew install ffmpeg`) and rerun.",
+            )
+        if err := _embed_ready(settings):
+            _refuse(
+                report,
+                f"embedding backend is down ({err}); the whole chunk would be "
+                "analyzed without dedup or graph links. Fix the embedder (is "
+                "Ollama running?) and rerun.",
+            )
 
         chunk = storage.media_chunk(settings, settings.media_chunk_size)
         if not chunk:
@@ -154,6 +188,7 @@ def run(settings: Settings) -> RunReport:
         logger.info("media_fetch: fetching chunk of %d permalink(s)", len(post_urls))
         rag = core._rag(settings)
         seen = core._seen(settings)
+        chunk_ids = {row[0] for row in chunk}
         processed: set[str] = set()
 
         def _analyze(item_id: str, queued: Item, got: Item) -> None:
@@ -182,7 +217,7 @@ def run(settings: Settings) -> RunReport:
                     fetch_dir,
                     settings,
                     report if final else RunReport(),
-                    select=_want(processed, final, fetch_dir),
+                    select=_want(chunk_ids, processed, final, fetch_dir),
                 )
             }
             if not final:
