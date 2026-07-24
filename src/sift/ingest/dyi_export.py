@@ -2,10 +2,16 @@
 
 Backfill + the ONLY safe route to already-sent self-DMs. Extracts captions too.
 
-Parses (JSON export shape only — see pull() for the HTML refusal):
-  - your_instagram_activity/saved/saved_posts.json (permalinks + timestamps; the
-    saved list genuinely carries no captions, so those items get caption="")
-  - your_instagram_activity/saved/saved_collections.json (names -> saved_collection)
+Parses (JSON export shape only — see pull() for the HTML refusal). Meta has shipped
+TWO JSON schemas; both are supported:
+  - legacy: {"saved_saved_media": [...]} rows with string_map_data (no captions
+    in the saved list — those items get caption="")
+  - 2025+: a bare top-level LIST of rows with label_values (URL/Caption/Title) —
+    this shape DOES carry the caption for each saved post (verified against a
+    real 2026-07 export)
+  - your_instagram_activity/saved/saved_posts.json (permalinks + timestamps)
+  - your_instagram_activity/saved/saved_collections.json (names -> saved_collection;
+    2025+ nests member rows inside per-collection "dict" entries)
   - your_instagram_activity/messages/inbox/*/message_*.json — the note-to-self
     thread is the one whose participants all share ONE name (real exports show
     both a single entry and the same name duplicated); shares carry the caption
@@ -110,6 +116,20 @@ def _infer_medium(link: str) -> Medium:
     return Medium.image
 
 
+def _label_values(entry: dict) -> dict[str, str]:
+    """Flatten a 2025+ label_values row list to {label: href-or-value} (first wins).
+    Rows without a label (timestamp_value rows, nested "dict" rows) are ignored."""
+    out: dict[str, str] = {}
+    for lv in entry.get("label_values", []):
+        if not isinstance(lv, dict):
+            continue
+        label = lv.get("label")
+        value = lv.get("href") or lv.get("value")
+        if label and isinstance(value, str) and label not in out:
+            out[label] = value
+    return out
+
+
 def _saved_items(
     root: _Root, source_export: str, counts: Counter, report: RunReport
 ) -> list[Item]:
@@ -125,46 +145,94 @@ def _saved_items(
         return []
     collections = _collection_map(root)
     items: list[Item] = []
-    for entry in _load_json(node).get("saved_saved_media", []):
-        href = entry.get("string_map_data", {}).get("Saved on", {}).get("href")
-        if not href:
-            counts["skipped_entries"] += 1
-            msg = f"saved post {entry.get('title')!r} has no permalink; entry skipped"
-            logger.warning("dyi_export: %s", msg)
-            report.errors.append(f"dyi_export: {msg}")
-            continue
-        ts = entry["string_map_data"]["Saved on"].get("timestamp")
-        saved_at = _utc_date(ts) if ts else None
+
+    def _append(href: str, caption: str, ts: float | None, title: str) -> None:
         items.append(
             Item(
                 id=_item_id(canonical_permalink(href), ""),
                 permalink=href,
                 medium=_infer_medium(href),
-                caption="",  # the saved list genuinely carries no caption
+                caption=caption,
                 ingest_via=IngestVia.dyi_export,
-                saved_collection=collections.get(href),
-                saved_at=saved_at,
+                saved_collection=collections.get(canonical_permalink(href)),
+                saved_at=_utc_date(ts) if ts else None,
                 source_export=source_export,
-                raw={"title": entry.get("title", "")},
+                raw={"title": title},
             )
         )
+
+    def _skip(name: object) -> None:
+        counts["skipped_entries"] += 1
+        msg = f"saved post {name!r} has no permalink; entry skipped"
+        logger.warning("dyi_export: %s", msg)
+        report.errors.append(f"dyi_export: {msg}")
+
+    data = _load_json(node)
+    if isinstance(data, list):
+        # 2025+ shape: bare list, label_values rows — and captions ARE present.
+        for entry in data:
+            lv = _label_values(entry)
+            href = lv.get("URL")
+            if not href:
+                _skip(lv.get("Title") or lv.get("Caption", "")[:40])
+                continue
+            _append(
+                href, lv.get("Caption", ""), entry.get("timestamp"), lv.get("Title", "")
+            )
+        return items
+    # Legacy shape: {"saved_saved_media": [...]} — no captions in the saved list.
+    for entry in data.get("saved_saved_media", []):
+        href = entry.get("string_map_data", {}).get("Saved on", {}).get("href")
+        if not href:
+            _skip(entry.get("title"))
+            continue
+        ts = entry["string_map_data"]["Saved on"].get("timestamp")
+        _append(href, "", ts, entry.get("title", ""))
     return items
 
 
+def _nested_urls(obj: object) -> list[str]:
+    """Every {"label": "URL"} href/value anywhere under obj (2025+ collections
+    nest member rows inside per-collection "dict" entries, two levels deep)."""
+    urls: list[str] = []
+    if isinstance(obj, dict):
+        href = obj.get("href") or obj.get("value")
+        if obj.get("label") == "URL" and isinstance(href, str):
+            urls.append(href)
+        obj = list(obj.values())
+    if isinstance(obj, list):
+        for v in obj:
+            if isinstance(v, (dict, list)):
+                urls.extend(_nested_urls(v))
+    return urls
+
+
 def _collection_map(root: _Root) -> dict[str, str]:
-    """permalink -> collection name. The export is a flat list: a row whose Name
-    has no href names a collection; following rows with hrefs are its members.
-    Absent file = no collections; tolerated entirely."""
+    """CANONICAL permalink -> collection name (keys canonicalized so a /reel/
+    member row still maps a /p/ saved row). Absent file = no collections.
+
+    Legacy shape is a flat list: a row whose Name has no href names a collection;
+    following rows with hrefs are its members. 2025+ shape is one row per
+    collection (Name label) with member rows nested under "dict" entries."""
     node = root / _COLLECTIONS
     if not node.exists():
         return {}
     mapping: dict[str, str] = {}
+    data = _load_json(node)
+    if isinstance(data, list):
+        for entry in data:
+            name = _label_values(entry).get("Name")
+            if not name:
+                continue
+            for url in _nested_urls(entry.get("label_values", [])):
+                mapping.setdefault(canonical_permalink(url), name)
+        return mapping
     current: str | None = None
-    for entry in _load_json(node).get("saved_saved_collections", []):
+    for entry in data.get("saved_saved_collections", []):
         name = entry.get("string_map_data", {}).get("Name", {})
         href = name.get("href")
         if href and current:
-            mapping[href] = current
+            mapping[canonical_permalink(href)] = current
         elif not href:
             current = entry.get("title") or name.get("value")
     return mapping

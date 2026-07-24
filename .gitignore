@@ -9,3 +9,7 @@ vault/media/
 dist/
 build/
 *.egg-info/
+
+# personal data - never commit
+instagram-*/
+sift-vault/
