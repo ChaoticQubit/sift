@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     ocr_base_url: str = "http://localhost:11434/v1"  # Ollama's OpenAI-compat endpoint
     ocr_model: str = "frob/unlimited-ocr:q8_0"
 
+    # Reels/video STT (F4, [stt] extra). Local faster-whisper model name; translation
+    # only ever targets English (Whisper's only direction, DESIGN §7) and is opt-in.
+    stt_model: str = "small"
+    stt_translate_to_english: bool = False
+
     # Ingestion. Cadence is enforced in code (cookie_fetch refuses runs <20h apart, F2),
     # not by a config string. No instagrapi flag — banned outright (CLAUDE.md rule 1).
     cookie_browser: str = "chrome"  # gallery-dl --cookies-from-browser
