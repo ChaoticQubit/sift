@@ -224,6 +224,87 @@ def test_self_share_caption_wins_id_collision(settings, tmp_path, fake_model):
     assert note["caption"] == "the real caption"
 
 
+def _new_shape_export(tmp_path) -> Path:
+    """The 2025+ export schema (verified against a real 2026-07 export): bare
+    top-level lists, label_values rows, captions present in the saved list,
+    collection members nested under "dict" entries."""
+    root = tmp_path / "instagram-new-2026-07"
+    saved = root / "your_instagram_activity/saved"
+    saved.mkdir(parents=True)
+    reel = "https://www.instagram.com/reel/NEWSHAPE1/"
+    (saved / "saved_posts.json").write_text(
+        json.dumps(
+            [
+                {
+                    "timestamp": 1784005125,
+                    "media": [],
+                    "label_values": [
+                        {"label": "URL", "value": reel, "href": reel},
+                        # mojibake: latin-1-escaped UTF-8 for "café"
+                        {"label": "Caption", "value": "cafÃ© recipe"},
+                        {"label": "Title", "value": "cookwithme"},
+                        {"timestamp_value": 1784005125},
+                    ],
+                },
+                {
+                    "timestamp": 1,
+                    "label_values": [{"label": "Caption", "value": "no url row"}],
+                },
+            ]
+        )
+    )
+    (saved / "saved_collections.json").write_text(
+        json.dumps(
+            [
+                {
+                    "timestamp": 1751414145,
+                    "label_values": [
+                        {"label": "Name", "value": "Food"},
+                        {"label": "Type", "value": "Default"},
+                        {
+                            "dict": [
+                                {
+                                    "dict": [
+                                        # /p/ form of the same shortcode: the map
+                                        # must still hit the /reel/ saved row.
+                                        {
+                                            "label": "URL",
+                                            "href": "https://www.instagram.com/p/NEWSHAPE1/",
+                                        },
+                                        {"label": "Caption", "value": "member cap"},
+                                    ]
+                                }
+                            ]
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+    return root
+
+
+def test_new_shape_saved_posts_with_captions(settings, tmp_path):
+    items, report = _pull(settings, _new_shape_export(tmp_path))
+    [item] = items
+    assert item.permalink == "https://www.instagram.com/reel/NEWSHAPE1/"
+    assert item.medium is Medium.reel
+    assert item.caption == "café recipe"  # captions exist in the 2025+ shape
+    assert item.saved_at == date(2026, 7, 14)
+    assert item.saved_collection == "Food"  # nested member, canonicalized match
+    assert item.raw["title"] == "cookwithme"
+    assert sum("skipped" in e for e in report.errors) == 1  # the url-less row
+
+
+def test_new_shape_ids_dedup_with_legacy(settings, tmp_path):
+    """Same shortcode via either schema -> same Item.id (canonical, date-free)."""
+    items, _ = _pull(settings, _new_shape_export(tmp_path))
+    legacy_id = dyi_export._item_id(
+        dyi_export.canonical_permalink("https://www.instagram.com/p/NEWSHAPE1/"), ""
+    )
+    assert items[0].id == legacy_id
+
+
 def test_wrapped_zip_descends(settings, dyi_zip, tmp_path):
     """A ZIP that wraps everything in one top-level folder still parses."""
     wrapped = tmp_path / "wrapped.zip"
