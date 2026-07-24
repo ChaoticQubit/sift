@@ -75,14 +75,20 @@ def process(
         logger.info("near-duplicate folded into %s: %s", path, item.id)
         return path
 
-    try:
-        interpretation = interpreter.interpret(item, extraction, settings)
-    except interpreter.InterpretationError as exc:
-        msg = f"{item.id}: interpreter output rejected ({exc}); default note"
-        logger.warning(msg)
-        report.errors.append(msg)
-        report.guardrail_blocks += 1
+    if not text.strip():
+        # Nothing to classify (e.g. a DM attachment missing from the export) —
+        # don't burn a model call asking the interpreter to read an empty string.
+        logger.info("%s: no content; default note without model call", item.id)
         interpretation = Interpretation()
+    else:
+        try:
+            interpretation = interpreter.interpret(item, extraction, settings)
+        except interpreter.InterpretationError as exc:
+            msg = f"{item.id}: interpreter output rejected ({exc}); default note"
+            logger.warning(msg)
+            report.errors.append(msg)
+            report.guardrail_blocks += 1
+            interpretation = Interpretation()
     note = Note(item=item, extraction=extraction, interpretation=interpretation)
     path = writer.write(note, settings)
     report.notes.append(path)

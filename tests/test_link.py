@@ -109,6 +109,16 @@ def test_seen_text_catches_same_run_duplicates(settings, fake_model, monkeypatch
     assert len(fake_model.prompts) == 1  # the dupe burned no second model call
 
 
+def test_empty_content_skips_the_model_call(settings, fake_model, monkeypatch):
+    monkeypatch.setattr(
+        "sift.extract.router.extract", lambda item, s: Extraction(text="")
+    )
+    report = RunReport()
+    core.process(_item("", "EMPTY"), settings, report)
+    assert report.written == 1 and report.errors == []
+    assert fake_model.prompts == []  # nothing to classify -> no model call
+
+
 def test_enrich_adds_related_wikilinks_idempotently(settings, fake_model):
     path = _write_note(settings, LONG, "AAA")
     handle = FakeHandle(
