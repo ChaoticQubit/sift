@@ -17,6 +17,11 @@
     },
     {
       "sender_name": "Fake Me",
+      "timestamp_ms": 1721260900000,
+      "content": "You sent an attachment."
+    },
+    {
+      "sender_name": "Fake Me",
       "timestamp_ms": 1721300000000,
       "photos": [
         {"uri": "your_instagram_activity/messages/inbox/self_notes/photos/photo_present.jpg"}

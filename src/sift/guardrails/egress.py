@@ -19,6 +19,7 @@ credentials are rejected outright.
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from urllib.parse import urljoin, urlsplit
 
@@ -53,6 +54,23 @@ def is_instagram_host(host: str) -> bool:
     scontent.cdninstagram.com passes; evil-instagram.com.attacker.net does not."""
     host = host.lower().rstrip(".")
     return any(host == h or host.endswith("." + h) for h in _INSTAGRAM_HOSTS)
+
+
+_POST_PATH = re.compile(r"^/(?:p|reel|reels|tv)/[A-Za-z0-9_-]+/?$")
+
+
+def is_instagram_post_url(url: str) -> bool:
+    """True only for a single-POST permalink (/p/, /reel/, /reels/, /tv/ + shortcode).
+    Profile links (instagram.com/<user>, /_u/<user>) MUST fail: pointing gallery-dl
+    at a profile downloads the whole feed, not one post — the media queue and the
+    chunk fetcher accept only post-shaped URLs."""
+    split = urlsplit(url)
+    return bool(
+        split.scheme in ("http", "https")
+        and split.hostname
+        and is_instagram_host(split.hostname)
+        and _POST_PATH.match(split.path)
+    )
 
 
 def assert_instagram_permalink(url: str) -> str:

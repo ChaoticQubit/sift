@@ -37,6 +37,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 
 from ..config import Settings
+from ..guardrails.egress import is_instagram_post_url
 from ..models import Item, RunReport
 from . import cookie_fetch
 
@@ -111,21 +112,26 @@ def run(settings: Settings) -> RunReport:
         fetch_dir = work / "fetch"
         fetch_dir.mkdir(parents=True, exist_ok=True)
         (work / _LAST_ATTEMPT_FILE).write_text(now.isoformat())
-        logger.info("media_fetch: fetching chunk of %d permalink(s)", len(chunk))
-        try:
-            proc = cookie_fetch._invoke(
-                cookie_fetch.build_argv(settings, [row[1] for row in chunk])
-            )
-        except OSError as exc:
-            _refuse(report, f"could not launch gallery-dl ({exc}); nothing fetched")
-        except subprocess.TimeoutExpired as exc:
-            proc = subprocess.CompletedProcess(
-                exc.cmd,
-                1,
-                stdout=str(exc.stdout or ""),
-                stderr="gallery-dl hung and was killed after "
-                f"{cookie_fetch._SUBPROCESS_TIMEOUT}s",
-            )
+        # Only post-shaped URLs are fetchable; anything else in the queue (e.g. a
+        # shared profile link) is closed out caption-only in the loop below.
+        post_urls = [row[1] for row in chunk if is_instagram_post_url(row[1])]
+        logger.info("media_fetch: fetching chunk of %d permalink(s)", len(post_urls))
+        proc = subprocess.CompletedProcess([], 0, "", "")
+        if post_urls:
+            try:
+                proc = cookie_fetch._invoke(
+                    cookie_fetch.build_argv(settings, post_urls)
+                )
+            except OSError as exc:
+                _refuse(report, f"could not launch gallery-dl ({exc}); nothing fetched")
+            except subprocess.TimeoutExpired as exc:
+                proc = subprocess.CompletedProcess(
+                    exc.cmd,
+                    1,
+                    stdout=str(exc.stdout or ""),
+                    stderr="gallery-dl hung and was killed after "
+                    f"{cookie_fetch._SUBPROCESS_TIMEOUT}s",
+                )
         output = f"{proc.stdout}\n{proc.stderr}"
 
         rate_limited = bool(cookie_fetch._RATE_LIMIT.search(output))
@@ -163,9 +169,21 @@ def run(settings: Settings) -> RunReport:
         }
         rag = core._rag(settings)
         seen = core._seen(settings)
-        for item_id, _permalink, payload, attempts in chunk:
+        for item_id, permalink, payload, attempts in chunk:
             report.processed += 1
             queued = Item.model_validate_json(payload)
+            if not is_instagram_post_url(permalink):
+                # Defense in depth: only post-shaped URLs are fetchable (a profile
+                # URL would pull the whole feed). Write its caption note and close
+                # the row out.
+                core.process(queued, settings, report, rag=rag, seen=seen)
+                storage.media_mark(
+                    item_id,
+                    "nomedia",
+                    "not a post permalink; caption-only note",
+                    settings,
+                )
+                continue
             got = fetched.get(item_id)
             if got is not None and got.media_files:
                 # The sidecar knows media truth (files, carousel/reel medium); the

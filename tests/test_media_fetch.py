@@ -166,6 +166,42 @@ def test_empty_queue_is_a_clean_noop(settings, no_rag, monkeypatch):
     assert not called and report.processed == 0  # no gallery-dl launch at all
 
 
+def test_profile_links_never_defer_and_never_reach_gallery_dl(
+    settings, fake_model, no_rag, offline_extract, monkeypatch
+):
+    from sift.guardrails.egress import is_instagram_post_url
+
+    # A shared PROFILE link is not a post: it must not be deferred...
+    profile = Item(
+        id="prof1",
+        permalink="https://www.instagram.com/_u/someshop",
+        medium=Medium.image,
+        caption="check this shop",
+        ingest_via=IngestVia.dyi_export,
+    )
+    assert not core._defer_to_media_queue(
+        profile, settings.model_copy(update={"media_defer": True})
+    )
+    assert is_instagram_post_url("https://www.instagram.com/p/ABC123/")
+    assert not is_instagram_post_url("https://www.instagram.com/_u/someshop")
+    assert not is_instagram_post_url("https://www.instagram.com/someshop")
+
+    # ...and a legacy queue row holding one is closed out caption-only, with the
+    # profile URL never passed to gallery-dl.
+    storage.enqueue_media(profile, settings)
+    invoked = []
+    monkeypatch.setattr(
+        cookie_fetch,
+        "_invoke",
+        lambda argv: invoked.append(argv)
+        or subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+    media_fetch.run(settings)
+    assert invoked == []  # nothing fetchable -> gallery-dl never launched
+    assert storage.media_counts(settings) == {"nomedia": 1}
+    assert len(list((settings.vault_path / "Captures").glob("*.md"))) == 1
+
+
 def test_build_argv_gates_every_chunk_url(settings):
     with pytest.raises(EgressError):
         cookie_fetch.build_argv(

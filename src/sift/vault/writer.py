@@ -94,9 +94,17 @@ def write(note: Note, settings: Settings) -> str:
         body = "\n\n".join(parts)
 
     post = frontmatter.Post(body, **to_frontmatter(note))
-    path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+    _atomic_write(path, frontmatter.dumps(post) + "\n")
     storage.mark_seen(note.item.id, settings)
     return str(path)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """tmp + rename: a killed run leaves the old note (or nothing), never a
+    truncated/0-byte file (one surfaced in a real run)."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def merge_source(path: str, item: Item, settings: Settings) -> str:
@@ -116,6 +124,6 @@ def merge_source(path: str, item: Item, settings: Settings) -> str:
         and item.caption not in post.content
     ):
         post.content += "\n\n## Caption (duplicate save)\n\n" + _fence(item.caption)
-    p.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+    _atomic_write(p, frontmatter.dumps(post) + "\n")
     storage.mark_seen(item.id, settings)
     return str(p)
