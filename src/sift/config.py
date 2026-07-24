@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # Models (provider-swappable; can be local)
     llm_provider: str = "anthropic"
     llm_model: str = "claude-sonnet-4-6"
+    # Point at any OpenAI-compatible /v1 to run the interpreter through a local
+    # gateway (e.g. a Claude Code wrapper on http://127.0.0.1:47821/v1); the
+    # anthropic provider is used when unset. Key comes from SIFT_LLM_API_KEY
+    # (placeholder "local" when absent — same pattern as the embedder).
+    llm_base_url: str | None = None
     embed_provider: str = "openai"
     embed_model: str = "text-embedding-3-small"
     # Point at any OpenAI-compatible /v1 to embed fully locally, e.g. Ollama:

@@ -319,6 +319,21 @@ def test_interpreter_agent_is_quarantined(settings):
     assert len(agent.pre_hooks) == 1
 
 
+def test_interpreter_openai_compatible_provider(settings, monkeypatch):
+    """SIFT_LLM_BASE_URL swaps the model to an OpenAI-compatible gateway with a
+    placeholder key (never a real provider key to a non-provider host); the
+    quarantine is unchanged."""
+    settings.llm_base_url = "http://127.0.0.1:47821/v1"
+    settings.llm_model = "claude-haiku-4-5-20251001"
+    monkeypatch.delenv("SIFT_LLM_API_KEY", raising=False)
+    agent = interpreter.build_agent(settings)
+    assert type(agent.model).__name__ == "OpenAILike"
+    assert agent.model.base_url == "http://127.0.0.1:47821/v1"
+    assert agent.model.api_key == "local"
+    assert not agent.tools and agent.db is None
+    assert agent.output_schema is Interpretation
+
+
 # ----------------------------------------------------------------------------- helpers
 
 

@@ -16,8 +16,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 @pytest.fixture
 def settings(tmp_path):
-    # Explicit init values beat any ambient SIFT_* env vars (pydantic-settings priority).
-    return Settings(vault_path=tmp_path / "vault", work_dir=None)
+    # Explicit init values beat any ambient SIFT_* env vars (pydantic-settings
+    # priority), and _env_file=None keeps a developer's real .env in the repo
+    # root (the tests' CWD) from leaking config into the suite.
+    return Settings(vault_path=tmp_path / "vault", work_dir=None, _env_file=None)
 
 
 @pytest.fixture

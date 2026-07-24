@@ -19,9 +19,11 @@ calls the model, which tests never do.
 from __future__ import annotations
 
 import logging
+import os
 
 from agno.agent import Agent
 from agno.models.anthropic import Claude
+from agno.models.base import Model
 from pydantic import ValidationError
 
 from ..config import Settings
@@ -44,6 +46,28 @@ class InterpretationError(Exception):
     """The interpreter returned something other than a valid Interpretation."""
 
 
+def _model(settings: Settings) -> Model:
+    """Provider swap (config.py): an OpenAI-compatible /v1 gateway when
+    SIFT_LLM_BASE_URL is set (e.g. a local Claude Code wrapper), else Anthropic.
+    The quarantine is identical either way — the model choice carries no tools."""
+    if settings.llm_base_url:
+        from agno.models.openai.like import OpenAILike
+
+        return OpenAILike(
+            id=settings.llm_model,
+            base_url=settings.llm_base_url,
+            # A local gateway ignores the key but the client requires one; never
+            # send a real provider key to a non-provider host (pii.py pattern).
+            api_key=os.environ.get("SIFT_LLM_API_KEY", "local"),
+            # Gateways commonly ignore response_format (verified against a local
+            # Claude Code wrapper: prose came back); declaring no native support
+            # makes agno prompt for JSON and parse it instead.
+            supports_native_structured_outputs=False,
+            supports_json_schema_outputs=False,
+        )
+    return Claude(id=settings.llm_model)
+
+
 def build_agent(settings: Settings) -> Agent:
     """The tool-less, secret-less, memory-less interpreter (Rule of Two, AGENTS.md §2).
 
@@ -52,7 +76,7 @@ def build_agent(settings: Settings) -> Agent:
     """
     return Agent(
         name="sift-interpreter",
-        model=Claude(id=settings.llm_model),
+        model=_model(settings),
         output_schema=Interpretation,  # strict; off-schema output rejected
         instructions=_INSTRUCTIONS,
         pre_hooks=[
