@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -21,6 +22,14 @@ class Settings(BaseSettings):
     llm_model: str = "claude-sonnet-4-6"
     embed_provider: str = "openai"
     embed_model: str = "text-embedding-3-small"
+
+    # Image OCR backend (DESIGN §17): "vlm" = provider vision model via Agno (default,
+    # production quality on stylized content); "local" = an OpenAI-compatible local
+    # server, e.g. Ollama running Baidu's Unlimited-OCR — free unlimited calls and
+    # image bytes never leave the machine (testing default; decided 2026-07-24).
+    ocr_backend: Literal["vlm", "local"] = "vlm"
+    ocr_base_url: str = "http://localhost:11434/v1"  # Ollama's OpenAI-compat endpoint
+    ocr_model: str = "frob/unlimited-ocr:q8_0"
 
     # Ingestion. Cadence is enforced in code (cookie_fetch refuses runs <20h apart, F2),
     # not by a config string. No instagrapi flag — banned outright (CLAUDE.md rule 1).
