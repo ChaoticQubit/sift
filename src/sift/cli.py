@@ -46,5 +46,13 @@ def review() -> None:
     typer.echo(digest.refresh(load_settings()))
 
 
+@app.command()
+def serve(host: str = "127.0.0.1", port: int = 8595) -> None:
+    """Run the share-capture endpoint (see docs/share-capture.md for phone setup)."""
+    from .ingest import share_capture
+
+    share_capture.serve(load_settings(), host=host, port=port)
+
+
 if __name__ == "__main__":
     app()
