@@ -282,7 +282,7 @@ You run your export **and** a scheduled `cookie_fetch` through it; your backlog 
 | Embedder egress | **Embed-bound text PII-masked** (same masker as interpreter path) | decided 2026-07-22; §10 |
 | Guardrail stack | **Sanitize + built-in PII mask + strict schema + value re-forcing**; Presidio & LLM Guard cut; injection-pattern filter log-only | decided 2026-07-22 — structural quarantine is the defense; `AGENTS.md` §3 |
 | Storage | **Dedup ledger only**; interpreter stateless; Agno Db at Life Planner fold-in | decided 2026-07-22; §12 |
-| Image OCR | **Vision-LLM only** (image bytes to provider = accepted tradeoff) | decided 2026-07-22; §7, §13.3 |
+| Image OCR | **Vision-LLM default** (image bytes to provider = accepted tradeoff); a **local OpenAI-compatible backend** (Ollama + Baidu Unlimited-OCR) is the opt-in swap for testing/offline — free unlimited, bytes stay on-machine | decided 2026-07-22; local swap added 2026-07-24; §7, §13.3 |
 | DB tech | SQLite (ledger) + LanceDB (RAG) | PgVector upgrade path |
 | Recurring ingest | `cookie_fetch` weekly, read-only | daily ceiling; never hourly |
 | DMs / backfill | `dyi_export` (occasional) | only safe DM route |

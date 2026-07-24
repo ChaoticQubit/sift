@@ -83,6 +83,43 @@ class TestImagesOcr:
         assert out.text == ""  # interpret() falls back to the caption
 
 
+class TestLocalOcrBackend:
+    def test_local_backend_calls_local_seam_not_agent(self, settings, monkeypatch):
+        settings.ocr_backend = "local"
+        files = [_put_image(settings, "a.png"), _put_image(settings, "b.jpg")]
+        calls: list[str] = []
+
+        def fake_local(s, image_bytes, mime):
+            calls.append(mime)
+            return f"text via {s.ocr_model}"
+
+        monkeypatch.setattr("sift.extract.images_ocr._run_local", fake_local)
+        monkeypatch.setattr(
+            "sift.extract.images_ocr.build_agent",
+            lambda s: pytest.fail("provider agent built on local backend"),
+        )
+        out = images_ocr.extract(
+            _item(medium=Medium.carousel, media_files=files), settings
+        )
+        assert calls == ["image/png", "image/jpeg"]
+        assert "text via" in out.text
+
+    def test_local_failure_skips_image_not_item(self, settings, monkeypatch):
+        settings.ocr_backend = "local"
+        files = [_put_image(settings, "a.png"), _put_image(settings, "b.png")]
+        results = iter([OSError("server down"), "recovered"])
+
+        def fake_local(s, image_bytes, mime):
+            r = next(results)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        monkeypatch.setattr("sift.extract.images_ocr._run_local", fake_local)
+        out = images_ocr.extract(_item(media_files=files), settings)
+        assert out.text == "recovered"
+
+
 class TestLinks:
     HTML = (
         "<html><head><title>Sourdough Guide</title></head><body><main>"
