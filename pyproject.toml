@@ -19,7 +19,7 @@ dependencies = [
 # Heavy deps live in extras so F0 installs stay light — add per phase (BUILD_CHECKLIST.md).
 # Guardrails need no extra: Agno built-ins + stdlib (Presidio/LLM Guard cut — AGENTS.md §3).
 stt = ["faster-whisper>=1.0"] # F4: reels STT (with freeflow)
-rag = ["lancedb>=0.9"]        # F5: Agno Knowledge / RAG (local, embedded)
+rag = ["lancedb>=0.9", "openai>=1.40"]  # F5: Agno Knowledge / RAG (local, embedded); openai = embedder client, also speaks Ollama's /v1
 dev = ["pytest>=8", "ruff>=0.5", "black>=24.4"]
 
 [project.scripts]

@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     llm_model: str = "claude-sonnet-4-6"
     embed_provider: str = "openai"
     embed_model: str = "text-embedding-3-small"
+    # Point at any OpenAI-compatible /v1 to embed fully locally, e.g. Ollama:
+    # SIFT_EMBED_BASE_URL=http://localhost:11434/v1 SIFT_EMBED_MODEL=nomic-embed-text
+    embed_base_url: str | None = None
+    embed_dimensions: int | None = None  # None = the client's default (1536 for OpenAI)
 
     # Image OCR backend (DESIGN §17): "vlm" = provider vision model via Agno (default,
     # production quality on stylized content); "local" = an OpenAI-compatible local
