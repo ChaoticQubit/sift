@@ -70,6 +70,26 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
         report.notes.append(writer.write(note, settings))
         report.written += 1
 
+    # Incremental RAG index of this run's notes (F5). The index is derived state:
+    # any failure here is logged and counted, never fatal — `sift index` repairs.
+    if report.notes:
+        try:
+            from .rag import knowledge
+
+            handle = knowledge._knowledge(settings)
+            for note_path in report.notes:
+                knowledge.index_note(note_path, settings, knowledge=handle)
+        except ImportError:
+            msg = "search index skipped — install with: pip install 'sift[rag]'"
+            logger.warning(msg)
+            report.errors.append(msg)
+        except Exception as exc:
+            msg = (
+                f"search indexing failed ({exc}); notes written, run `sift index` later"
+            )
+            logger.warning(msg)
+            report.errors.append(msg)
+
     try:
         digest.refresh(settings)
     except NotImplementedError:
