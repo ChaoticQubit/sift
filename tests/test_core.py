@@ -22,8 +22,8 @@ def _fake_items() -> list[Item]:
         ),
         Item(
             id="fake-2",
-            permalink="https://www.instagram.com/p/FAKEPOST02/",
-            medium=Medium.image,
+            permalink="https://www.instagram.com/reel/FAKEPOST02/",
+            medium=Medium.reel,
             caption="Apply by Aug 1.",
             ingest_via=IngestVia.dyi_export,
         ),
@@ -42,7 +42,7 @@ def test_run_counts_and_note_content(settings, monkeypatch, fake_model):
 
     report = core.run("dyi_export", settings, path="ignored.zip")
     assert (report.processed, report.written, report.skipped) == (2, 2, 0)
-    # image extractor is F3: logged, item still written caption-only — never dropped.
+    # reel extractor is F4: logged, item still written caption-only — never dropped.
     assert any("fake-2" in e for e in report.errors)
     # digest is F6: noted in the report, run does not crash.
     assert any("digest" in e for e in report.errors)

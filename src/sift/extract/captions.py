@@ -10,5 +10,6 @@ from ..models import Extraction, Item
 
 
 def extract(item: Item) -> Extraction:
-    """Return the caption as an Extraction (cleaned). TODO F3: normalize, language-detect."""
+    """The caption IS the extraction for text posts — verbatim, so the writer's
+    equality check dedups the note body and interpret() sends it once."""
     return Extraction(text=item.caption or "")

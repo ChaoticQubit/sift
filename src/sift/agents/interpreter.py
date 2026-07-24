@@ -91,9 +91,14 @@ def _validated(content: object) -> Interpretation:
 
 
 def interpret(item: Item, extraction: Extraction, settings: Settings) -> Interpretation:
-    """sanitize -> mask -> spotlight -> model (seam) -> validate -> re-force values."""
-    text = extraction.text or item.caption
-    if not text.strip():
+    """sanitize -> mask -> spotlight -> model (seam) -> validate -> re-force values.
+
+    Caption is first-class (CLAUDE.md rule 2): the model sees caption AND extracted
+    text when both exist — dict.fromkeys drops the echo when extraction is the caption.
+    """
+    parts = [t.strip() for t in (item.caption, extraction.text) if t and t.strip()]
+    text = "\n\n".join(dict.fromkeys(parts))
+    if not text:
         return Interpretation()  # nothing to interpret; skip the model call
     flag_injection(text, provenance=f"item {item.id} via {item.ingest_via.value}")
     prompt, _ = spotlight(mask_for_model(sanitize_untrusted(text)))
