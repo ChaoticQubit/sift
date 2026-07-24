@@ -8,12 +8,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from pathlib import Path
 
 import frontmatter
 
 from ..config import Settings
 from ..db import storage
-from ..models import Classification, Note
+from ..models import Classification, Item, Note
 from .frontmatter import to_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -96,3 +97,25 @@ def write(note: Note, settings: Settings) -> str:
     path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
     storage.mark_seen(note.item.id, settings)
     return str(path)
+
+
+def merge_source(path: str, item: Item, settings: Settings) -> str:
+    """Fold a near-duplicate capture into its EXISTING note (one page per piece of
+    content — rag/link.py decides sameness). Records the extra permalink in a
+    `sources` frontmatter list and the caption when it differs; marks the dupe's
+    Item.id seen so reruns skip it. Idempotent."""
+    p = Path(path)
+    post = frontmatter.load(p)
+    if item.permalink and item.permalink != post.metadata.get("source"):
+        sources = [str(s) for s in post.metadata.get("sources") or []]
+        if item.permalink not in sources:
+            post.metadata["sources"] = sources + [item.permalink]
+    if (
+        item.caption
+        and item.caption != post.metadata.get("caption")
+        and item.caption not in post.content
+    ):
+        post.content += "\n\n## Caption (duplicate save)\n\n" + _fence(item.caption)
+    p.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+    storage.mark_seen(item.id, settings)
+    return str(p)

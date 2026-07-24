@@ -158,16 +158,19 @@ def grow_backoff(previous_days: int | None) -> int:
     return min(previous_days * 2, _BACKOFF_CAP_DAYS)
 
 
-def build_argv(settings: Settings) -> list[str]:
+def build_argv(settings: Settings, urls: list[str] | None = None) -> list[str]:
     """The exact gallery-dl invocation — argv list, NEVER shell=True or interpolation.
 
     Strictly a read-only download: gallery-dl has no like/follow/comment/DM
     capability at all, no extractor options (-o) are passed, and --config-ignore
     keeps ambient user config (cookie export, proxy, exec postprocessors) out —
     the behavior really is exactly this list (asserted byte-for-byte in tests).
-    The one account-scoped URL is routed through the egress gate (AGENTS.md §3a:
-    enforcement, not assertion)."""
+    urls=None targets the account's Saved folder (this adapter); media_fetch passes
+    its chunk of post permalinks. EVERY account-scoped URL is routed through the
+    egress gate (AGENTS.md §3a: enforcement, not assertion)."""
     work = settings.resolved_work_dir
+    if urls is None:
+        urls = [f"https://www.instagram.com/{settings.ig_username}/saved/"]
     return [
         sys.executable,
         "-m",
@@ -182,9 +185,7 @@ def build_argv(settings: Settings) -> list[str]:
         "--write-metadata",
         "--directory",
         str(work / "fetch"),
-        assert_instagram_permalink(
-            f"https://www.instagram.com/{settings.ig_username}/saved/"
-        ),
+        *(assert_instagram_permalink(u) for u in urls),
     ]
 
 

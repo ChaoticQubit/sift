@@ -45,6 +45,21 @@ class Settings(BaseSettings):
     stt_model: str = "small"
     stt_translate_to_english: bool = False
 
+    # Media backfill (ingest/media_fetch). Bulk imports (DYI export) carry permalinks
+    # but NO media bytes. With media_defer on, Instagram-permalink items without media
+    # skip caption-only interpretation and wait in the SQLite media_queue for chunked
+    # fetching — ONE full analysis per item, with OCR/STT, never two model calls.
+    # Chunks are even-sized and daily-schedulable until the queue drains.
+    media_defer: bool = False
+    media_chunk_size: int = 100
+
+    # Graph layer (rag/link.py): the connected-second-brain knobs.
+    # merge_similarity: token-Jaccard floor for folding a re-saved duplicate into
+    # its existing page (skipping its model call). link_max: Related wikilinks per
+    # note — the Obsidian graph edges.
+    merge_similarity: float = 0.85
+    link_max: int = 4
+
     # share_capture endpoint (F7). Required for any non-loopback bind — `sift serve`
     # refuses a LAN bind without it (anyone on the network could write into the vault).
     capture_token: str | None = None

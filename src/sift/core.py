@@ -3,34 +3,136 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 from .config import Settings
-from .models import Extraction, Interpretation, Note, RunReport
+from .models import Extraction, Interpretation, Item, Note, RunReport
 
 logger = logging.getLogger(__name__)
 
 
-def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
+def _rag(settings: Settings):
+    """One per-run Knowledge handle, or None when [rag] is absent/unreachable.
+    Everything graph/index-shaped degrades gracefully without it."""
+    try:
+        from .rag import knowledge
+
+        return knowledge._knowledge(settings)
+    except Exception as exc:
+        logger.debug("rag unavailable (%s); notes stay unindexed this run", exc)
+        return None
+
+
+def _seen(settings: Settings):
+    """The per-run in-memory dedupe cache (rag/link.py SeenText), or None."""
+    try:
+        from .rag import link
+
+        return link.SeenText(settings.merge_similarity)
+    except Exception as exc:  # pragma: no cover — link has no heavy deps
+        logger.debug("in-run dedupe unavailable (%s)", exc)
+        return None
+
+
+def process(
+    item: Item, settings: Settings, report: RunReport, rag=None, seen=None
+) -> str:
+    """Extract -> dedupe -> interpret -> write ONE item (no ledger gate) — the shared
+    per-item pipeline for run() and the media-backfill chunks (ingest/media_fetch).
+
+    A near-duplicate (same content re-saved under another permalink) folds into its
+    existing page and SKIPS the model call (rag/link.py): `seen` catches dupes
+    within this run, the index catches dupes against earlier runs. Off-schema or
+    failed interpreter output is logged, counted as a guardrail block, and the item
+    falls back to a default Interpretation() — it still gets a note, never silently
+    dropped (CLAUDE.md Conventions).
+    """
+    from .agents import interpreter
+    from .extract import router
+    from .vault import writer
+
+    try:
+        extraction = router.extract(item, settings)
+    except NotImplementedError as exc:
+        msg = f"{item.id}: {item.medium.value} extractor not ready ({exc}); caption-only note"
+        logger.warning(msg)
+        report.errors.append(msg)
+        extraction = Extraction(text=item.caption)
+
+    text = f"{item.caption}\n\n{extraction.text}"
+    dup = seen.check(text) if seen is not None else None
+    if dup is None and rag is not None:
+        try:
+            from .rag import link
+
+            dup = link.find_duplicate(text, settings, handle=rag)
+        except Exception as exc:
+            logger.debug("duplicate check skipped (%s)", exc)
+    if dup:
+        path = writer.merge_source(dup, item, settings)
+        report.merged += 1
+        report.notes.append(path)  # content changed -> finalize re-indexes it
+        logger.info("near-duplicate folded into %s: %s", path, item.id)
+        return path
+
+    if not text.strip():
+        # Nothing to classify (e.g. a DM attachment missing from the export) —
+        # don't burn a model call asking the interpreter to read an empty string.
+        logger.info("%s: no content; default note without model call", item.id)
+        interpretation = Interpretation()
+    else:
+        try:
+            interpretation = interpreter.interpret(item, extraction, settings)
+        except interpreter.InterpretationError as exc:
+            msg = f"{item.id}: interpreter output rejected ({exc}); default note"
+            logger.warning(msg)
+            report.errors.append(msg)
+            report.guardrail_blocks += 1
+            interpretation = Interpretation()
+    note = Note(item=item, extraction=extraction, interpretation=interpretation)
+    path = writer.write(note, settings)
+    report.notes.append(path)
+    report.written += 1
+    if seen is not None:
+        seen.add(text, path)
+    return path
+
+
+def _defer_to_media_queue(item: Item, settings: Settings) -> bool:
+    """True when this item should wait for the chunked media backfill instead of
+    being interpreted caption-only: an Instagram permalink with no media on disk.
+    One model call per item — the chunk run analyzes it WITH its media (OCR/STT)."""
+    from .guardrails.egress import is_instagram_host
+
+    if not settings.media_defer or item.media_files or not item.permalink:
+        return False
+    host = urlsplit(item.permalink).hostname
+    return bool(host) and is_instagram_host(host)
+
+
+def run(
+    source: str,
+    settings: Settings,
+    path: str | None = None,
+    defer_media: bool | None = None,
+) -> RunReport:
     """Ingest via one adapter and process NEW items into the vault.
 
     source: "cookie_fetch" | "share_capture" | "dyi_export"  (DESIGN.md §4)
     path:   the export ZIP path for dyi_export; unused otherwise.
+    defer_media: overrides settings.media_defer for this run (None = use the setting).
 
     Pipeline (DESIGN.md §5, AGENTS.md §2): ingest -> dedup ledger -> deterministic
-    extract -> interpret -> deterministic write -> digest refresh. Hard rules: no
-    instagrapi; account code read-only; Rule of Two structural (only the interpreter
-    sees untrusted text, and it has no tools); idempotent.
+    extract -> interpret -> deterministic write -> graph linking + digest refresh.
+    Hard rules: no instagrapi; account code read-only; Rule of Two structural (only
+    the interpreter sees untrusted text, and it has no tools); idempotent.
 
-    Off-schema or failed interpreter output is logged, counted as a guardrail block,
-    and the item falls back to a default Interpretation() — it still gets a note,
-    never silently dropped (CLAUDE.md Conventions).
+    With media_defer on, Instagram-permalink items lacking media bytes are queued in
+    the SQLite media_queue instead of being interpreted caption-only; the chunked
+    backfill (`sift fetch-media`) fetches their media and runs the one full analysis.
     """
-    from .agents import interpreter
     from .db import storage
-    from .extract import router
     from .ingest import cookie_fetch, dyi_export, share_capture
-    from .review import digest
-    from .vault import writer
 
     adapters = {
         "cookie_fetch": cookie_fetch,
@@ -41,8 +143,12 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
         raise ValueError(
             f"unknown source {source!r}; expected one of {sorted(adapters)}"
         )
+    if defer_media is not None:
+        settings = settings.model_copy(update={"media_defer": defer_media})
 
     report = RunReport()
+    rag = _rag(settings)
+    seen = _seen(settings)
     # Adapters count their own skips/missing-media into the report (log-and-count,
     # never silent drops — CLAUDE.md Conventions).
     for item in adapters[source].pull(settings, path, report):
@@ -51,41 +157,41 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
             report.skipped += 1
             logger.info("skipped (already in ledger): %s", item.id)
             continue
-        try:
-            extraction = router.extract(item, settings)
-        except NotImplementedError as exc:
-            msg = f"{item.id}: {item.medium.value} extractor not ready ({exc}); caption-only note"
-            logger.warning(msg)
-            report.errors.append(msg)
-            extraction = Extraction(text=item.caption)
-        try:
-            interpretation = interpreter.interpret(item, extraction, settings)
-        except interpreter.InterpretationError as exc:
-            msg = f"{item.id}: interpreter output rejected ({exc}); default note"
-            logger.warning(msg)
-            report.errors.append(msg)
-            report.guardrail_blocks += 1
-            interpretation = Interpretation()
-        note = Note(item=item, extraction=extraction, interpretation=interpretation)
-        report.notes.append(writer.write(note, settings))
-        report.written += 1
+        if _defer_to_media_queue(item, settings):
+            storage.enqueue_media(item, settings)
+            storage.mark_seen(item.id, settings)  # the queue owns it now; reruns skip
+            report.deferred += 1
+            logger.info("deferred to media queue: %s", item.id)
+            continue
+        process(item, settings, report, rag=rag, seen=seen)
 
-    # Incremental RAG index of this run's notes (F5). The index is derived state:
-    # any failure here is logged and counted, never fatal — `sift index` repairs.
+    finalize(report, settings, rag=rag)
+    return report
+
+
+def finalize(report: RunReport, settings: Settings, rag=None) -> None:
+    """Index + graph-link this run's notes and refresh the digest — derived state,
+    never fatal: any failure is logged and counted; `sift index` / `sift review`
+    repair later."""
+    from .review import digest
+
     if report.notes:
         try:
-            from .rag import knowledge
+            from .rag import knowledge, link
 
-            handle = knowledge._knowledge(settings)
+            handle = rag or knowledge._knowledge(settings)
             for note_path in report.notes:
                 knowledge.index_note(note_path, settings, knowledge=handle)
+            link.enrich(report.notes, settings, handle=handle)
+            link.topics(settings)
         except ImportError:
             msg = "search index skipped — install with: pip install 'sift[rag]'"
             logger.warning(msg)
             report.errors.append(msg)
         except Exception as exc:
             msg = (
-                f"search indexing failed ({exc}); notes written, run `sift index` later"
+                f"indexing/graph linking failed ({exc}); notes written, "
+                "run `sift index` later"
             )
             logger.warning(msg)
             report.errors.append(msg)
@@ -98,4 +204,3 @@ def run(source: str, settings: Settings, path: str | None = None) -> RunReport:
         msg = f"action-review digest refresh failed ({exc}); notes written"
         logger.warning(msg)
         report.errors.append(msg)
-    return report
