@@ -166,6 +166,21 @@ def test_unique_frames_keeps_first_frame_and_scene_changes_only(settings, tmp_pa
     assert len(reels_stt._unique_frames(video, capped, cap=1)) == 1
 
 
+def test_frames_text_reads_real_duration_for_the_cap(settings, monkeypatch):
+    """Regression: av.time_base is the int 1_000_000 — multiplying by it made a
+    2s clip look like ~2e12s and always hit the max cap instead of 20."""
+    video = _two_scene_video(settings)
+    caps: list[int] = []
+
+    def fake_frames(path, out_dir, cap):
+        caps.append(cap)
+        return []
+
+    monkeypatch.setattr(reels_stt, "_unique_frames", fake_frames)
+    reels_stt._frames_text(video, settings)
+    assert caps == [20]  # a 2s video is "short", never the 100-frame tier
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 def test_frames_text_ocrs_each_unique_frame(settings, monkeypatch):
     video = _two_scene_video(settings)
