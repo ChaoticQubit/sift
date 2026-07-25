@@ -6,6 +6,8 @@ are monkeypatched (CLAUDE.md Conventions).
 
 from __future__ import annotations
 
+import base64
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -103,6 +105,32 @@ class TestLocalOcrBackend:
         )
         assert calls == ["image/png", "image/jpeg"]
         assert "text via" in out.text
+
+    def test_webp_converted_to_png_for_local_server(self, settings, monkeypatch):
+        """The local OCR server 400s on webp; the loop must convert, never send raw."""
+        settings.ocr_backend = "local"
+        files = [_put_image(settings, "chart.webp"), _put_image(settings, "a.png")]
+        sent: list[tuple[bytes, str]] = []
+        monkeypatch.setattr(
+            "sift.extract.images_ocr._png_bytes", lambda p: b"converted-png"
+        )
+        monkeypatch.setattr(
+            "sift.extract.images_ocr._run_local",
+            lambda s, b, m: sent.append((b, m)) or "ok",
+        )
+        images_ocr.extract(_item(medium=Medium.carousel, media_files=files), settings)
+        assert sent[0] == (b"converted-png", "image/png")  # webp never sent raw
+        assert sent[1] == (b"\x89PNG fake-bytes", "image/png")  # others untouched
+
+    @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+    def test_png_bytes_really_converts_webp(self, tmp_path):
+        # A minimal valid 1x1 VP8L webp, inlined: local ffmpeg builds decode webp
+        # natively but often lack an ENCODER, so we can't generate one on the fly.
+        src = tmp_path / "real.webp"
+        src.write_bytes(
+            base64.b64decode("UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==")
+        )
+        assert images_ocr._png_bytes(src)[:8] == b"\x89PNG\r\n\x1a\n"
 
     def test_local_failure_skips_image_not_item(self, settings, monkeypatch):
         settings.ocr_backend = "local"

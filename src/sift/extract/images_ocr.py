@@ -19,7 +19,10 @@ import base64
 import json
 import logging
 import re
+import subprocess
+import tempfile
 import urllib.request
+from pathlib import Path
 
 from agno.agent import Agent
 from agno.media import Image
@@ -62,6 +65,19 @@ def build_agent(settings: Settings) -> Agent:
 def _run(agent: Agent, image: Image) -> object:
     """The provider model-call seam. Offline tests monkeypatch THIS (CLAUDE.md Conventions)."""
     return agent.run("Transcribe this image.", images=[image])
+
+
+def _png_bytes(path: Path) -> bytes:
+    """webp -> png via ffmpeg (already the media pipeline's hard dependency): the
+    local OCR server rejects webp payloads with HTTP 400 (verified 2026-07-24)."""
+    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+        subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-i", str(path), tmp.name],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        return Path(tmp.name).read_bytes()
 
 
 def _run_local(settings: Settings, image_bytes: bytes, mime: str) -> str:
@@ -122,7 +138,10 @@ def extract(item: Item, settings: Settings) -> Extraction:
             continue
         try:
             if settings.ocr_backend == "local":
-                text = _run_local(settings, path.read_bytes(), mime)
+                data, send_mime = path.read_bytes(), mime
+                if mime == "image/webp":
+                    data, send_mime = _png_bytes(path), "image/png"
+                text = _run_local(settings, data, send_mime)
             else:
                 agent = agent or build_agent(settings)  # fresh per item
                 output = _run(agent, Image(filepath=path))
