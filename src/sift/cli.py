@@ -51,6 +51,21 @@ def fetch_media() -> None:
 
 
 @app.command()
+def requeue_videos() -> None:
+    """Re-open analyzed reel/video posts so the next chunks re-fetch and
+    re-analyze them (use after an extraction upgrade, e.g. video-frame OCR)."""
+    import json as _json
+
+    from .db import storage
+    from .ingest import media_fetch
+
+    settings = load_settings()
+    result = media_fetch.requeue_videos(settings)
+    result["media_queue"] = storage.media_counts(settings)
+    typer.echo(_json.dumps(result))
+
+
+@app.command()
 def search(query: str) -> None:
     """Search your processed captures."""
     from .rag import search as _search

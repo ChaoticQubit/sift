@@ -105,6 +105,26 @@ def media_bump(item_id: str, settings: Settings) -> None:
         )
 
 
+def media_done_videos(settings: Settings) -> list[tuple[str, str]]:
+    """(item_id, permalink) of DONE rows whose queued payload is a reel/video —
+    the reanalysis set after an extraction upgrade (e.g. frame OCR)."""
+    with closing(_connect(settings)) as conn:
+        return conn.execute(
+            "SELECT item_id, permalink FROM media_queue WHERE status = 'done'"
+            " AND json_extract(payload, '$.medium') IN ('reel', 'video')"
+        ).fetchall()
+
+
+def media_requeue(item_ids: list[str], settings: Settings) -> None:
+    """Re-open rows for a fresh fetch+analysis pass: pending again, attempts reset."""
+    with closing(_connect(settings)) as conn, conn:
+        conn.executemany(
+            "UPDATE media_queue SET status = 'pending', attempts = 0, detail = '',"
+            " updated_at = CURRENT_TIMESTAMP WHERE item_id = ?",
+            [(i,) for i in item_ids],
+        )
+
+
 def media_counts(settings: Settings) -> dict[str, int]:
     """status -> count, for reports and manual auditing."""
     with closing(_connect(settings)) as conn:

@@ -1,6 +1,11 @@
-"""F4 reels/video STT — offline, the model seam monkeypatched (CLAUDE.md Conventions)."""
+"""F4 reels/video STT + frame OCR — offline, the model seams monkeypatched
+(CLAUDE.md Conventions); the ffmpeg frame-extraction tests use real media."""
 
 from __future__ import annotations
+
+import shutil
+
+import pytest
 
 from sift.extract import reels_stt, router
 from sift.models import IngestVia, Item, Medium
@@ -83,11 +88,10 @@ def test_missing_stt_extra_is_caption_only(settings, monkeypatch):
     assert out.text == ""  # interpret() falls back to the caption
 
 
-def test_soundless_video_is_skipped_not_crashed(settings):
+def test_soundless_video_is_skipped_not_crashed(settings, monkeypatch):
     """A reel with its audio removed used to crash PyAV's stream lookup with a
     bare IndexError; the probe skips it cleanly — real _transcribe, no seam."""
-    import pytest
-
+    monkeypatch.setattr(reels_stt, "_frames_text", lambda p, s: "")  # no OCR here
     av = pytest.importorskip("av")
     media = settings.vault_path / "media"
     media.mkdir(parents=True, exist_ok=True)
@@ -102,6 +106,75 @@ def test_soundless_video_is_skipped_not_crashed(settings):
 
     out = reels_stt.extract(_item(media_files=["media/silent.mp4"]), settings)
     assert out.text == "" and out.confidence is None and out.artifacts == {}
+
+
+def test_frame_cap_scales_with_duration():
+    assert reels_stt._frame_cap(0) == 20  # unknown duration -> treated short
+    assert reels_stt._frame_cap(59.9) == 20
+    assert reels_stt._frame_cap(60) == 50
+    assert reels_stt._frame_cap(300) == 50
+    assert reels_stt._frame_cap(300.1) == 100
+
+
+def test_onscreen_text_joins_the_transcript(settings, monkeypatch):
+    files = [_put_media(settings, "a.mp4")]
+    monkeypatch.setattr(reels_stt, "_transcribe", lambda p, s: ("spoken", "en", 0.9))
+    monkeypatch.setattr(reels_stt, "_frames_text", lambda p, s: "ON-SCREEN LIST")
+    out = reels_stt.extract(_item(media_files=files), settings)
+    assert out.text == "spoken\n\nON-SCREEN LIST"
+
+
+def test_frame_ocr_failure_is_transcript_only_never_fatal(settings, monkeypatch):
+    files = [_put_media(settings, "a.mp4")]
+    monkeypatch.setattr(reels_stt, "_transcribe", lambda p, s: ("spoken", "en", 0.9))
+
+    def boom(p, s):
+        raise RuntimeError("ffmpeg exploded")
+
+    monkeypatch.setattr(reels_stt, "_frames_text", boom)
+    out = reels_stt.extract(_item(media_files=files), settings)
+    assert out.text == "spoken"
+
+
+def _two_scene_video(settings) -> str:
+    """A real mp4: 8 red frames then 8 blue — exactly one scene change."""
+    np = pytest.importorskip("numpy")
+    av = pytest.importorskip("av")
+    media = settings.vault_path / "media"
+    media.mkdir(parents=True, exist_ok=True)
+    path = media / "scenes.mp4"
+    with av.open(str(path), "w") as container:
+        stream = container.add_stream("mpeg4", rate=8)
+        stream.width = stream.height = 64
+        stream.pix_fmt = "yuv420p"
+        for color in ((255, 0, 0), (0, 0, 255)):
+            rgb = np.full((64, 64, 3), color, dtype=np.uint8)
+            for _ in range(8):
+                container.mux(stream.encode(av.VideoFrame.from_ndarray(rgb, "rgb24")))
+        container.mux(stream.encode(None))
+    return str(path)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_unique_frames_keeps_first_frame_and_scene_changes_only(settings, tmp_path):
+    video = _two_scene_video(settings)
+    full = tmp_path / "full"
+    full.mkdir()
+    assert len(reels_stt._unique_frames(video, full, cap=10)) == 2  # 16 in, 2 unique
+    capped = tmp_path / "capped"
+    capped.mkdir()
+    assert len(reels_stt._unique_frames(video, capped, cap=1)) == 1
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_frames_text_ocrs_each_unique_frame(settings, monkeypatch):
+    video = _two_scene_video(settings)
+    settings.ocr_backend = "local"
+    texts = iter(["SLIDE ONE", "SLIDE TWO"])
+    monkeypatch.setattr(
+        "sift.extract.images_ocr._run_local", lambda s, b, m: next(texts)
+    )
+    assert reels_stt._frames_text(video, settings) == "SLIDE ONE\n\nSLIDE TWO"
 
 
 def test_router_dispatches_reel_and_video(settings, monkeypatch):
