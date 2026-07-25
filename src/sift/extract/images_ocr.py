@@ -123,18 +123,19 @@ def _run_local(settings: Settings, image_bytes: bytes, mime: str) -> str:
     return re.sub(r"(?m)^\s*[a-z_]+\s*\[[\d, ]+\]\s*", "", text)
 
 
-def extract(item: Item, settings: Settings) -> Extraction:
-    """Loop all N media files -> one tool-less OCR call each -> concatenated text."""
+def ocr_paths(paths: list[Path], settings: Settings) -> list[str]:
+    """OCR each image file -> its text. The shared engine behind carousel
+    extraction and reels_stt's video-frame OCR; skips (with a log line) rather
+    than fails on any missing, unsupported, or OCR-refusing file."""
     texts: list[str] = []
     agent: Agent | None = None
-    for name in item.media_files:
-        path = settings.vault_path / name
+    for path in paths:
         mime = _IMAGE_MIME.get(path.suffix.lower())
         if mime is None:
-            logger.info("images_ocr: %s is not an OCR-able image; skipped", name)
+            logger.info("images_ocr: %s is not an OCR-able image; skipped", path)
             continue
         if not path.is_file():
-            logger.warning("images_ocr: %s missing from vault; skipped", name)
+            logger.warning("images_ocr: %s missing; skipped", path)
             continue
         try:
             if settings.ocr_backend == "local":
@@ -150,10 +151,16 @@ def extract(item: Item, settings: Settings) -> Extraction:
             logger.warning(
                 "images_ocr: %s OCR failed on %s (%s); image skipped",
                 settings.ocr_backend,
-                name,
+                path,
                 exc,
             )
             continue
         if text.strip():
             texts.append(text.strip())
-    return Extraction(text="\n\n".join(texts))
+    return texts
+
+
+def extract(item: Item, settings: Settings) -> Extraction:
+    """Loop all N media files -> one tool-less OCR call each -> concatenated text."""
+    paths = [settings.vault_path / name for name in item.media_files]
+    return Extraction(text="\n\n".join(ocr_paths(paths, settings)))

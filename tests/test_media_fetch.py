@@ -308,6 +308,43 @@ def test_dead_embedder_refuses_before_burning_attempts(settings, monkeypatch):
     assert storage.media_counts(settings) == {"pending": 1}  # nothing burned
 
 
+def test_requeue_videos_reopens_done_reels_and_forgets_archive(settings):
+    """The reanalysis pipeline: done reels go back to pending (attempts reset)
+    AND the gallery-dl archive forgets them so media actually re-downloads;
+    non-video rows and other posts' archive entries are untouched."""
+    reel = _queued_item("REEL01").model_copy(
+        update={
+            "medium": Medium.reel,
+            "permalink": "https://www.instagram.com/reel/REEL01/?id=123456789_42",
+        }
+    )
+    still = _queued_item("IMAGE1")
+    storage.enqueue_media(reel, settings)
+    storage.enqueue_media(still, settings)
+    storage.media_bump(reel.id, settings)
+    storage.media_mark(reel.id, "done", "1 media file(s)", settings)
+    storage.media_mark(still.id, "done", "1 media file(s)", settings)
+    archive = settings.resolved_work_dir / "gallery-dl-archive.db"
+    with sqlite3.connect(archive) as conn:
+        conn.execute("CREATE TABLE archive (entry TEXT PRIMARY KEY) WITHOUT ROWID")
+        conn.executemany(
+            "INSERT INTO archive VALUES (?)",
+            [("instagram123456789",), ("instagram999",)],
+        )
+
+    assert media_fetch.requeue_videos(settings) == {"requeued": 1, "archive_purged": 1}
+
+    with sqlite3.connect(settings.resolved_work_dir / "ledger.db") as conn:
+        rows = dict(
+            conn.execute("SELECT item_id, status || '|' || attempts FROM media_queue")
+        )
+    assert rows[reel.id] == "pending|0"  # re-opened, attempts reset
+    assert rows[still.id] == "done|0"  # images stay done
+    with sqlite3.connect(archive) as conn:
+        left = [r[0] for r in conn.execute("SELECT entry FROM archive")]
+    assert left == ["instagram999"]  # only the reel was forgotten
+
+
 def test_build_argv_gates_every_chunk_url(settings):
     with pytest.raises(EgressError):
         cookie_fetch.build_argv(

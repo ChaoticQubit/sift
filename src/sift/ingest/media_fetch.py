@@ -41,9 +41,11 @@ import json
 import logging
 import re
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -125,6 +127,34 @@ def _refuse(report: RunReport, msg: str) -> None:
     logger.error("media_fetch: %s", msg)
     report.errors.append(f"media_fetch: {msg}")
     raise RuntimeError(f"media_fetch: {msg}")
+
+
+def requeue_videos(settings: Settings) -> dict[str, int]:
+    """Re-open every analyzed reel/video for a fresh pass (after an extraction
+    upgrade like frame OCR). Two durable flips, then normal chunks do the rest:
+    the queue row goes back to pending, and the gallery-dl download archive
+    forgets the post so its media actually re-downloads. The note refreshes in
+    place (core's self-refresh guard keeps it from merging into itself)."""
+    from ..db import storage
+
+    rows = storage.media_done_videos(settings)
+    archive = settings.resolved_work_dir / "gallery-dl-archive.db"
+    purged = 0
+    if rows and archive.exists():
+        with closing(sqlite3.connect(archive)) as conn, conn:
+            for _item_id, permalink in rows:
+                if m := re.search(r"[?&]id=(\d+)", permalink):
+                    purged += conn.execute(
+                        "DELETE FROM archive WHERE entry = ?",
+                        (f"instagram{m.group(1)}",),
+                    ).rowcount
+    storage.media_requeue([r[0] for r in rows], settings)
+    logger.info(
+        "media_fetch: requeued %d video post(s), purged %d archive entrie(s)",
+        len(rows),
+        purged,
+    )
+    return {"requeued": len(rows), "archive_purged": purged}
 
 
 def run(settings: Settings) -> RunReport:
