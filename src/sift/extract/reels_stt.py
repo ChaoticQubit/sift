@@ -93,7 +93,10 @@ def _frames_text(path: str, settings: Settings) -> str:
     with av.open(path) as container:
         if not container.streams.video:
             return ""  # voice note / audio-only file
-        seconds = float((container.duration or 0) * av.time_base)
+        # container.duration is in AV_TIME_BASE (microsecond) units; av.time_base
+        # is the int 1_000_000, so DIVIDE — multiplying made every video look
+        # hours long and always hit the max frame cap.
+        seconds = (container.duration or 0) / av.time_base
     with tempfile.TemporaryDirectory() as tmp:
         frames = _unique_frames(path, Path(tmp), _frame_cap(seconds))
         logger.info("reels_stt: %s -> %d unique frame(s) for OCR", path, len(frames))
