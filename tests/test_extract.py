@@ -132,6 +132,20 @@ class TestLocalOcrBackend:
         )
         assert images_ocr._png_bytes(src)[:8] == b"\x89PNG\r\n\x1a\n"
 
+    def test_degenerate_ocr_loops_are_dropped_not_written(self, settings, monkeypatch):
+        """Unlimited-OCR spirals on textless frames, repeating a meta sentence
+        dozens of times; that junk must never reach a note (2026-07-25, 18 notes)."""
+        settings.ocr_backend = "local"
+        files = [_put_image(settings, "blank.png"), _put_image(settings, "list.png")]
+        junk = "The OCR result is inconsistent with the GT's visual content. " * 12
+        results = iter([junk, "A real list of books shown on screen\nDDIA\nSICP"])
+        monkeypatch.setattr(
+            "sift.extract.images_ocr._run_local", lambda s, b, m: next(results)
+        )
+        out = images_ocr.extract(_item(media_files=files), settings)
+        assert "GT's visual content" not in out.text  # junk frame dropped
+        assert "DDIA" in out.text  # real screen text kept
+
     def test_local_failure_skips_image_not_item(self, settings, monkeypatch):
         settings.ocr_backend = "local"
         files = [_put_image(settings, "a.png"), _put_image(settings, "b.png")]
