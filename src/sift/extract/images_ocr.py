@@ -92,6 +92,11 @@ def _run_local(settings: Settings, image_bytes: bytes, mime: str) -> str:
         {
             "model": settings.ocr_model,
             "temperature": 0,
+            # Unlimited-OCR's degenerate loops (see _degenerate) generate
+            # UNBOUNDED output server-side — an uncapped request can sit for
+            # hours waiting on a response that never finishes. Real screen
+            # text fits well inside this.
+            "max_tokens": 2000,
             "messages": [
                 {
                     "role": "user",

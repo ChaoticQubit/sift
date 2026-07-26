@@ -132,6 +132,29 @@ class TestLocalOcrBackend:
         )
         assert images_ocr._png_bytes(src)[:8] == b"\x89PNG\r\n\x1a\n"
 
+    def test_local_ocr_request_caps_generation_and_times_out(self, settings, monkeypatch):
+        """A degenerate loop generates unbounded output server-side; the request
+        must cap generation (and keep its socket timeout) or analysis hangs for
+        hours on a response that never finishes (observed 2026-07-26)."""
+        import io
+        import json as _json
+
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["body"] = _json.loads(request.data)
+            captured["timeout"] = timeout
+            return io.BytesIO(
+                _json.dumps({"choices": [{"message": {"content": "hi"}}]}).encode()
+            )
+
+        monkeypatch.setattr(
+            "sift.extract.images_ocr.urllib.request.urlopen", fake_urlopen
+        )
+        assert images_ocr._run_local(settings, b"png-bytes", "image/png") == "hi"
+        assert captured["body"]["max_tokens"] == 2000
+        assert captured["timeout"] == 300
+
     def test_degenerate_ocr_loops_are_dropped_not_written(self, settings, monkeypatch):
         """Unlimited-OCR spirals on textless frames, repeating a meta sentence
         dozens of times; that junk must never reach a note (2026-07-25, 18 notes)."""
