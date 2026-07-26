@@ -119,8 +119,20 @@ def _run_local(settings: Settings, image_bytes: bytes, mime: str) -> str:
     text = data["choices"][0]["message"]["content"]
     # Unlimited-OCR emits document-parsing grounding markup ("text [0, 9, 263, 48]...")
     # regardless of prompt (DeepSeek-OCR lineage; verified 2026-07-24). Strip the
-    # label+bbox prefixes; the transcribed text itself is untouched.
-    return re.sub(r"(?m)^\s*[a-z_]+\s*\[[\d, ]+\]\s*", "", text)
+    # label+bbox prefixes — including unclosed brackets, which its degenerate
+    # output produces — the transcribed text itself is untouched.
+    return re.sub(r"(?m)^\s*[a-z_]+\s*\[[\d, ]+\]?\s*", "", text)
+
+
+def _degenerate(text: str) -> bool:
+    """Unlimited-OCR spirals on textless frames (backgrounds, divider lines),
+    emitting near-identical meta sentences dozens of times instead of an empty
+    response (observed 2026-07-25 across 18 notes). Real screen text doesn't
+    repeat itself: mostly-duplicate sentences = junk, drop the frame.
+    ponytail: exact-sentence duplicate ratio; a single non-repeating
+    hallucinated sentence slips through — tighten only if one reaches a note."""
+    sentences = [s.strip() for s in re.split(r"[.\n]+", text) if len(s.strip()) > 20]
+    return len(sentences) >= 4 and len(set(sentences)) / len(sentences) < 0.5
 
 
 def ocr_paths(paths: list[Path], settings: Settings) -> list[str]:
@@ -155,8 +167,13 @@ def ocr_paths(paths: list[Path], settings: Settings) -> list[str]:
                 exc,
             )
             continue
-        if text.strip():
-            texts.append(text.strip())
+        text = text.strip()
+        if not text:
+            continue
+        if _degenerate(text):
+            logger.info("images_ocr: degenerate OCR loop on %s; frame dropped", path)
+            continue
+        texts.append(text)
     return texts
 
 
