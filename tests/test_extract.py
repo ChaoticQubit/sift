@@ -160,7 +160,13 @@ class TestLocalOcrBackend:
         dozens of times; that junk must never reach a note (2026-07-25, 18 notes)."""
         settings.ocr_backend = "local"
         files = [_put_image(settings, "blank.png"), _put_image(settings, "list.png")]
-        junk = "The OCR result is inconsistent with the GT's visual content. " * 12
+        # Varied sentences, like the loops that slipped exact-duplicate matching:
+        # the signature check must catch them.
+        junk = "".join(
+            f"Therefore, the OCR result is inconsistent with the GT's visual "
+            f"content in region {i}. The OCR has hallucinated underscores. "
+            for i in range(12)
+        )
         results = iter([junk, "A real list of books shown on screen\nDDIA\nSICP"])
         monkeypatch.setattr(
             "sift.extract.images_ocr._run_local", lambda s, b, m: next(results)
@@ -168,6 +174,18 @@ class TestLocalOcrBackend:
         out = images_ocr.extract(_item(media_files=files), settings)
         assert "GT's visual content" not in out.text  # junk frame dropped
         assert "DDIA" in out.text  # real screen text kept
+
+    def test_repetitive_real_screen_text_is_never_dropped(self):
+        """Real frames repeat phrases legitimately (UI chrome, lesson lists,
+        watermarks) — the junk detector must not fire on them."""
+        for real in [
+            "README More Chapter 01 " * 10,  # repeated UI chrome
+            "FREEMAN " * 40,  # a watermark on every line
+            "In this lesson, we use Kirchhoff's Current Law to solve circuits. "
+            "In this lesson, we continue to use Kirchhoff's Voltage Law too. "
+            "In this lesson, we apply Kirchhoff's Laws to a bridge circuit. ",
+        ]:
+            assert not images_ocr._degenerate(real)
 
     def test_local_failure_skips_image_not_item(self, settings, monkeypatch):
         settings.ocr_backend = "local"
