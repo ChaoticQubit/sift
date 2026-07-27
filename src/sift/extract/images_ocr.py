@@ -129,13 +129,27 @@ def _run_local(settings: Settings, image_bytes: bytes, mime: str) -> str:
     return re.sub(r"(?m)^\s*[a-z_]+\s*\[[\d, ]+\]?\s*", "", text)
 
 
+# Unlimited-OCR's degenerate-loop signature (its internal self-evaluation
+# vocabulary, DeepSeek-OCR lineage — same provenance as the grounding markup
+# above). Statistical shape checks are NOT usable here: real screen text
+# legitimately repeats phrases (UI chrome, lesson lists) and repeats across
+# frames, so both duplicate-ratio and compression-ratio fire on real notes
+# (validated against 2048 clean frame chunks, 2026-07-27).
+_DEGENERATE_SIG = re.compile(
+    r"inconsistent with the GT|OCR (result|output|has) (is|must|hallucinated)"
+)
+
+
 def _degenerate(text: str) -> bool:
     """Unlimited-OCR spirals on textless frames (backgrounds, divider lines),
-    emitting near-identical meta sentences dozens of times instead of an empty
-    response (observed 2026-07-25 across 18 notes). Real screen text doesn't
-    repeat itself: mostly-duplicate sentences = junk, drop the frame.
-    ponytail: exact-sentence duplicate ratio; a single non-repeating
-    hallucinated sentence slips through — tighten only if one reaches a note."""
+    emitting looping self-evaluation meta sentences instead of an empty
+    response (observed 2026-07-25 across 18 notes). Real screen text never
+    discusses "the GT's visual content": 3+ signature hits = junk, drop the
+    frame. Exact-duplicate sentences also fire (verbatim loops with no
+    signature). max_tokens in _run_local bounds whatever a novel signature
+    could emit."""
+    if len(_DEGENERATE_SIG.findall(text)) >= 3:
+        return True
     sentences = [s.strip() for s in re.split(r"[.\n]+", text) if len(s.strip()) > 20]
     return len(sentences) >= 4 and len(set(sentences)) / len(sentences) < 0.5
 
