@@ -57,11 +57,11 @@ LONG = (
 )
 
 
-def _write_note(settings, caption, shortcode, tags=()):
+def _write_note(settings, caption, shortcode, tags=(), domain="misc"):
     note = Note(
         item=_item(caption, shortcode),
         extraction=Extraction(text=caption),
-        interpretation=Interpretation(tags=list(tags)),
+        interpretation=Interpretation(tags=list(tags), domain=domain),
     )
     return writer.write(note, settings)
 
@@ -151,18 +151,53 @@ def test_enrich_adds_related_wikilinks_idempotently(settings, fake_model):
     assert "- [[graphify-note-1234]]" in post.content
 
 
-def test_topics_builds_tag_hub_pages(settings, fake_model):
-    _write_note(settings, LONG, "AAA", tags=["agentic-framework", "Token Reduction"])
+def test_topics_builds_domain_then_subtopic_hierarchy(settings, fake_model):
+    _write_note(
+        settings,
+        LONG,
+        "AAA",
+        tags=["agentic-framework", "Token Reduction"],
+        domain="technology",
+    )
     _write_note(
         settings,
         "another capture about agent frameworks",
         "BBB",
         tags=["agentic-framework"],
+        domain="technology",
     )
-    assert link.topics(settings) == 2
-    hub = settings.vault_path / "Topics" / "agentic-framework.md"
+    _write_note(settings, "amazing pasta in rome", "CCC", tags=["italy"], domain="travel")
+    assert link.topics(settings) == 2  # two domains in use
+
+    topics = settings.vault_path / "Topics"
+    # Shared tag (2 notes) -> a subtopic hub nested under its domain.
+    hub = topics / "technology" / "agentic-framework.md"
     assert hub.read_text().count("- [[") == 2
-    assert (settings.vault_path / "Topics" / "token-reduction.md").exists()
+    assert "[[agentic-framework]]" in (topics / "technology.md").read_text()
+    # Singleton tags get NO hub page; their notes list directly on the domain page.
+    assert not (topics / "technology" / "token-reduction.md").exists()
+    assert not (topics / "travel" / "italy.md").exists()
+    assert "- [[" in (topics / "travel.md").read_text()
+
+
+def test_topics_wipes_stale_hubs_and_defaults_missing_domain_to_misc(
+    settings, fake_model
+):
+    topics = settings.vault_path / "Topics"
+    topics.mkdir(parents=True)
+    (topics / "renamed-away.md").write_text("stale flat hub")
+    _write_note(settings, LONG, "AAA", tags=["old-tag"])  # no domain in kwargs -> misc
+    assert link.topics(settings) == 1
+    assert not (topics / "renamed-away.md").exists()  # derived state fully rebuilt
+    assert "- [[" in (topics / "misc.md").read_text()
+
+
+def test_interpreter_off_enum_domain_degrades_to_misc_not_rejected():
+    from sift.models import Domain
+
+    assert Interpretation(domain="tech").domain is Domain.misc
+    assert Interpretation(domain="TRAVEL ").domain is Domain.travel
+    assert Interpretation().domain is Domain.misc
 
 
 def test_merge_source_is_idempotent(settings):

@@ -61,6 +61,7 @@ def test_frontmatter_golden():
         "ingest_via": "dyi_export",
         "caption": CAPTION,
         "classification": "educational",
+        "domain": "misc",
         "saved_collection": "Recipes",
         "saved_at": date(2026, 3, 12),
         "created": date.today(),

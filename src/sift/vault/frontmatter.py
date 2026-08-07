@@ -27,6 +27,7 @@ def to_frontmatter(note: Note) -> dict:
     meta["ingest_via"] = item.ingest_via.value
     meta["caption"] = item.caption  # FIRST-CLASS, verbatim from the Item
     meta["classification"] = interp.classification.value
+    meta["domain"] = interp.domain.value
     if item.saved_collection:
         meta["saved_collection"] = item.saved_collection
     if item.saved_at is not None:

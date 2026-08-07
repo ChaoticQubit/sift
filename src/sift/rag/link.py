@@ -10,8 +10,10 @@ three mechanisms turn isolated capture notes into a connected Obsidian graph:
      source (vault/writer.merge_source) and never burns a second model call.
   2. enrich — after a run, every new note gets `related:` frontmatter and a
      "## Related" section of wikilinks to its nearest neighbors: the graph edges.
-  3. topics — Topics/<tag>.md hub pages wikilink every note carrying the tag, so
-     categories cluster the graph. Regenerated each run; pure derived state.
+  3. topics — a two-level hub hierarchy: Topics/<domain>.md (the ~10 fixed
+     human-scale models.Domain shelves) links Topics/<domain>/<tag>.md subtopic
+     hubs, which wikilink every note carrying the tag. Regenerated (wiped and
+     rebuilt) each run; pure derived state.
 
 The only model-bound data is the PII-MASKED query text sent to the embedder —
 the same masking contract as indexing (AGENTS.md §3a). Failures here are the
@@ -136,24 +138,68 @@ def enrich(note_paths: list[str], settings: Settings, handle=None) -> int:
     return linked
 
 
+# A subtopic tag earns its own hub page only when this many notes share it;
+# rarer tags stay in note frontmatter (still searchable/RAG-visible) and their
+# notes are listed directly on the domain page. Human-scale filter, decided
+# 2026-08-07: one flat page per tag produced 4809 hubs, 71% single-note noise.
+_MIN_HUB_NOTES = 2
+
+
 def topics(settings: Settings) -> int:
-    """Regenerate Topics/<tag>.md hub pages from note tags. Pure derived state."""
-    by_tag: dict[str, list[str]] = {}
+    """Regenerate the two-level Topics/ hierarchy from note frontmatter.
+
+    Topics/<domain>.md            — one hub per fixed models.Domain a note uses:
+                                    links its subtopic hubs + notes with no hub tag.
+    Topics/<domain>/<tag>.md      — one hub per tag with >= _MIN_HUB_NOTES notes
+                                    inside that domain.
+
+    Pure derived state: the whole folder is wiped and rebuilt each run, so
+    renamed/vanished tags never leave stale hubs behind. Returns the domain count.
+    """
+    import shutil
+
+    by_domain: dict[str, dict[str, list[str]]] = {}  # domain -> tag -> stems
+    domain_notes: dict[str, set[str]] = {}  # domain -> all stems
     for note in sorted((settings.vault_path / "Captures").glob("*.md")):
         try:
             post = frontmatter.load(note)
         except OSError:
             continue
+        domain = str(post.metadata.get("domain") or "misc")
+        domain_notes.setdefault(domain, set()).add(note.stem)
         for tag in post.metadata.get("tags") or []:
             slug = _TAG_SLUG.sub("-", str(tag).lower()).strip("-")
             if slug:
-                by_tag.setdefault(slug, []).append(note.stem)
-    if by_tag:
-        topics_dir = settings.vault_path / "Topics"
-        topics_dir.mkdir(parents=True, exist_ok=True)
-        for slug, stems in by_tag.items():
-            links = "\n".join(f"- [[{s}]]" for s in sorted(set(stems)))
-            (topics_dir / f"{slug}.md").write_text(
-                f"---\ntype: topic\ntag: {slug}\n---\n\n{links}\n", encoding="utf-8"
+                by_domain.setdefault(domain, {}).setdefault(slug, []).append(note.stem)
+
+    topics_dir = settings.vault_path / "Topics"
+    if topics_dir.exists():
+        shutil.rmtree(topics_dir)
+    if not domain_notes:
+        return 0
+    topics_dir.mkdir(parents=True)
+
+    for domain, stems in sorted(domain_notes.items()):
+        tags = by_domain.get(domain, {})
+        hubs = {t: s for t, s in tags.items() if len(set(s)) >= _MIN_HUB_NOTES}
+        in_hubs: set[str] = set()
+        if hubs:
+            (topics_dir / domain).mkdir()
+        for tag, tag_stems in sorted(hubs.items()):
+            uniq = sorted(set(tag_stems))
+            in_hubs.update(uniq)
+            links = "\n".join(f"- [[{s}]]" for s in uniq)
+            (topics_dir / domain / f"{tag}.md").write_text(
+                f"---\ntype: topic\ndomain: {domain}\ntag: {tag}\n---\n\n{links}\n",
+                encoding="utf-8",
             )
-    return len(by_tag)
+        parts = [f"---\ntype: domain\ndomain: {domain}\n---\n"]
+        if hubs:
+            parts.append("## Subtopics\n")
+            parts.append("\n".join(f"- [[{t}]]" for t in sorted(hubs)) + "\n")
+        loose = sorted(stems - in_hubs)
+        if loose:
+            parts.append("## Notes\n")
+            parts.append("\n".join(f"- [[{s}]]" for s in loose) + "\n")
+        (topics_dir / f"{domain}.md").write_text("\n".join(parts), encoding="utf-8")
+    return len(domain_notes)
