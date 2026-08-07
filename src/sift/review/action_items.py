@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import frontmatter
@@ -31,6 +32,11 @@ class Candidate:
     key: str  # 8-hex id-hash from the filename
     index: int  # position in the note's action_items list
     item: ActionItem
+    domain: str = "misc"  # note's models.Domain shelf (frontmatter)
+    # When the post was SAVED on the platform. Deliberately not `created`: that is
+    # the note's (re)write date, which reprocessing resets — it says nothing about
+    # whether the content is still current.
+    saved_at: date | None = None
 
 
 def note_key(path: Path) -> str | None:
@@ -46,6 +52,7 @@ def collect(settings: Settings) -> list[Candidate]:
         if key is None:
             continue  # not a sift capture note
         post = frontmatter.load(path)
+        saved = post.metadata.get("saved_at")
         for i, raw in enumerate(post.metadata.get("action_items") or []):
             try:
                 item = ActionItem.model_validate(raw)
@@ -54,5 +61,14 @@ def collect(settings: Settings) -> list[Candidate]:
                     "action_items: %s[%d] malformed (%s); skipped", path.name, i, exc
                 )
                 continue
-            out.append(Candidate(note=path, key=key, index=i, item=item))
+            out.append(
+                Candidate(
+                    note=path,
+                    key=key,
+                    index=i,
+                    item=item,
+                    domain=str(post.metadata.get("domain") or "misc"),
+                    saved_at=saved if isinstance(saved, date) else None,
+                )
+            )
     return out

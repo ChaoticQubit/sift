@@ -78,6 +78,15 @@ class ActionItem(BaseModel):
     due: date | None = None
     confidence: float = Field(0.0, ge=0.0, le=1.0)
     status: Literal["pending", "confirmed", "dismissed"] = "pending"
+    priority: Literal["high", "medium", "low"] | None = None
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _coerce_priority(cls, v: object) -> object:
+        """Coerce, not reject: an off-vocabulary model value ("urgent") degrades to
+        None (display falls back to confidence), never fails the Interpretation."""
+        s = str(v).strip().lower() if v is not None else ""
+        return s if s in ("high", "medium", "low") else None
 
     @field_validator("confidence", mode="before")
     @classmethod
