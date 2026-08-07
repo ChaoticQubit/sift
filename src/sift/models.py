@@ -54,6 +54,25 @@ class Classification(str, Enum):
     entertainment = "entertainment"
 
 
+class Domain(str, Enum):
+    """The FIXED human-scale shelf set (decided 2026-08-07): a normal reader can hold
+    ~10 domains in their head, so Topics/ nests thousands of model-emitted tags under
+    these instead of one flat hub per tag. Specific tags stay in note frontmatter for
+    search/RAG — the model side never needed the hierarchy, the human side does."""
+
+    technology = "technology"
+    career = "career"
+    education = "education"
+    finance = "finance"
+    entertainment = "entertainment"
+    travel = "travel"
+    food = "food"
+    health = "health"
+    lifestyle = "lifestyle"
+    inspiration = "inspiration"
+    misc = "misc"
+
+
 class ActionItem(BaseModel):
     text: str
     due: date | None = None
@@ -91,6 +110,7 @@ class Interpretation(BaseModel):
     """
 
     classification: Classification = Classification.reference
+    domain: Domain = Domain.misc
     summary: str = ""
     key_points: list[str] = []  # the post's actual substance, one point per entry
     resources: list[Resource] = []
@@ -98,6 +118,15 @@ class Interpretation(BaseModel):
     keep_media: bool = False  # image is a dense visual reference worth reopening
     tags: list[str] = []
     action_items: list[ActionItem] = []
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _coerce_domain(cls, v: object) -> object:
+        """Coerce, not reject (same reasoning as ActionItem confidence): an off-enum
+        domain ("tech") must degrade to misc, never fail the whole Interpretation."""
+        values = {d.value for d in Domain}
+        s = str(v).strip().lower() if v is not None else ""
+        return s if s in values else Domain.misc
 
 
 class Note(BaseModel):
