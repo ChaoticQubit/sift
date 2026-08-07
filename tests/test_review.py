@@ -9,10 +9,26 @@ import frontmatter
 from sift.review import action_items, digest
 
 
-def _write_note(settings, key: str, items: list[dict], caption: str = "cap") -> None:
+def _write_note(
+    settings,
+    key: str,
+    items: list[dict],
+    caption: str = "cap",
+    saved_at: date | str = "today",
+    domain: str | None = None,
+) -> None:
+    """saved_at defaults to today so undated items land inside the board window;
+    pass None to model an old/undatable post."""
     captures = settings.vault_path / "Captures"
     captures.mkdir(parents=True, exist_ok=True)
-    post = frontmatter.Post("body", caption=caption, action_items=items)
+    meta: dict = {"caption": caption, "action_items": items}
+    if saved_at == "today":
+        saved_at = date.today()
+    if saved_at is not None:
+        meta["saved_at"] = saved_at
+    if domain is not None:
+        meta["domain"] = domain
+    post = frontmatter.Post("body", **meta)
     (captures / f"note-{key}.md").write_text(
         frontmatter.dumps(post) + "\n", encoding="utf-8"
     )
@@ -54,33 +70,73 @@ class TestCollect:
 
 
 class TestDigestRender:
-    def test_grouped_sorted_flagged_and_linked(self, settings):
+    def test_expired_dues_leave_the_board_but_stay_in_the_note(self, settings):
         _write_note(
             settings,
             "aaaa1111",
             [
-                {"text": "overdue thing", "due": date(2020, 1, 1), "confidence": 0.9},
+                {"text": "passed deadline", "due": date(2020, 1, 1), "confidence": 0.9},
                 {"text": "future thing", "due": date(2199, 1, 1), "confidence": 0.8},
-                {"text": "someday", "confidence": 0.4},
             ],
         )
         path = digest.refresh(settings)
         text = (settings.vault_path / "Action Review.md").read_text()
         assert path.endswith("Action Review.md")
-        due = text.index("## Due")
-        undated = text.index("## Undated")
-        assert due < text.index("overdue thing") < text.index("future thing") < undated
-        lines = {
-            ln.split("] ", 1)[1].split(" —")[0]: ln
-            for ln in text.splitlines()
-            if ln.startswith("- [")
-        }
-        assert "**OVERDUE**" in lines["overdue thing"]
-        assert "**OVERDUE**" not in lines["future thing"]
-        assert text.index("someday") > undated
-        assert "[[note-aaaa1111]]" in text
-        assert "^sift-aaaa1111-0" in text
-        assert "(90%)" in text
+        assert "passed deadline" not in text  # off the board...
+        assert "passed deadline" in str(_note_items(settings, "aaaa1111"))  # ...kept
+        assert text.index("## Due") < text.index("future thing")
+        assert "**OVERDUE**" not in text
+        assert "1 older or expired candidates" in text
+        assert "[[note-aaaa1111]]" in text and "^sift-aaaa1111-1" in text
+
+    def test_undated_grouped_by_domain_then_priority(self, settings):
+        _write_note(
+            settings,
+            "aaaa1111",
+            [
+                {"text": "enroll in course", "confidence": 0.3, "priority": "high"},
+                {"text": "maybe watch talk", "confidence": 0.9, "priority": "low"},
+            ],
+            domain="education",
+        )
+        _write_note(
+            settings,
+            "bbbb2222",
+            # No explicit priority -> confidence fallback (0.9 -> high).
+            [{"text": "update resume", "confidence": 0.9}],
+            domain="career",
+        )
+        digest.refresh(settings)
+        text = (settings.vault_path / "Action Review.md").read_text()
+        # Domains are sections; explicit priority beats the confidence fallback.
+        career, education = text.index("## Career"), text.index("## Education")
+        assert career < text.index("update resume") < education
+        assert (
+            education
+            < text.index("### High", education)
+            < text.index("enroll in course")
+            < text.index("### Low", education)
+            < text.index("maybe watch talk")
+        )
+
+    def test_stale_undated_items_hidden_by_the_saved_window(self, settings):
+        _write_note(
+            settings,
+            "aaaa1111",
+            [{"text": "years-old idea", "confidence": 0.9}],
+            saved_at=date(2023, 1, 1),
+        )
+        _write_note(
+            settings,
+            "bbbb2222",
+            [{"text": "no save date", "confidence": 0.9}],
+            saved_at=None,
+        )
+        digest.refresh(settings)
+        text = (settings.vault_path / "Action Review.md").read_text()
+        assert "years-old idea" not in text
+        assert "no save date" not in text  # undatable -> treated as stale
+        assert "2 older or expired candidates" in text
 
     def test_empty_vault_renders_placeholder(self, settings):
         digest.refresh(settings)

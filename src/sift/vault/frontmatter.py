@@ -13,6 +13,8 @@ def _action_item(ai: ActionItem) -> dict:
         d["due"] = ai.due
     d["confidence"] = ai.confidence
     d["status"] = ai.status
+    if ai.priority is not None:
+        d["priority"] = ai.priority
     return d
 
 

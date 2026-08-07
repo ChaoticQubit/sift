@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import frontmatter
@@ -66,6 +66,12 @@ def _apply(digest_path: Path, settings: Settings) -> None:
             path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
 
 
+# How long an undated candidate stays on the board after its post was saved.
+# Decided 2026-08-07: the board is a doable list, not an archive — 3570 open
+# candidates spanning years was unusable. Hidden items stay in their notes.
+_UNDATED_WINDOW = timedelta(days=30)
+
+
 def _line(c: Candidate, box: str) -> str:
     text = _escape_md((c.item.text.splitlines() or [""])[0])
     bits = [f"- [{box}] {text}"]
@@ -79,31 +85,69 @@ def _line(c: Candidate, box: str) -> str:
     return " ".join(bits)
 
 
+def _priority(c: Candidate) -> str:
+    """Explicit interpreter priority; pre-priority notes fall back to confidence
+    (the closest existing signal) until a reprocess stamps the real field."""
+    if c.item.priority:
+        return c.item.priority
+    if c.item.confidence >= 0.8:
+        return "high"
+    return "medium" if c.item.confidence >= 0.5 else "low"
+
+
 def refresh(settings: Settings) -> str:
-    """Apply user edits, then re-render Action Review.md. Returns the digest path."""
+    """Apply user edits, then re-render Action Review.md. Returns the digest path.
+
+    The board is deliberately a WINDOW, not the full candidate set (decided
+    2026-08-07): a passed deadline or a stale saved post is no longer actionable,
+    so it leaves the board while its note keeps the item. Rules:
+      dated   -> shown only while due today or later, sorted by due date;
+      undated -> shown only when the post was saved within _UNDATED_WINDOW,
+                 grouped by note domain, then High/Medium/Low priority.
+    """
     digest_path = settings.vault_path / "Action Review.md"
     _apply(digest_path, settings)
 
+    today = date.today()
     candidates = collect(settings)
     pending = [c for c in candidates if c.item.status == "pending"]
     confirmed = [c for c in candidates if c.item.status == "confirmed"]
     dated = sorted(
-        (c for c in pending if c.item.due is not None),
+        (c for c in pending if c.item.due is not None and c.item.due >= today),
         key=lambda c: (c.item.due, -c.item.confidence),
     )
-    undated = sorted(
-        (c for c in pending if c.item.due is None), key=lambda c: -c.item.confidence
-    )
+    undated = [
+        c
+        for c in pending
+        if c.item.due is None
+        and c.saved_at is not None
+        and today - c.saved_at <= _UNDATED_WINDOW
+    ]
+    hidden = len(pending) - len(dated) - len(undated)
 
     parts = ["# Action Review", "", _HEADER, ""]
     if dated:
         parts += ["## Due", *(_line(c, " ") for c in dated), ""]
-    if undated:
-        parts += ["## Undated", *(_line(c, " ") for c in undated), ""]
+    for domain in sorted({c.domain for c in undated}):
+        parts += [f"## {domain.capitalize()}"]
+        group = [c for c in undated if c.domain == domain]
+        for level in ("high", "medium", "low"):
+            rows = sorted(
+                (c for c in group if _priority(c) == level),
+                key=lambda c: -c.item.confidence,
+            )
+            if rows:
+                parts += [f"### {level.capitalize()}", *(_line(c, " ") for c in rows)]
+        parts += [""]
     if confirmed:
         parts += ["## Confirmed", *(_line(c, "x") for c in confirmed), ""]
     if not (dated or undated or confirmed):
         parts.append("No action-item candidates yet.")
+    if hidden:
+        parts += [
+            f"*{hidden} older or expired candidates are off the board "
+            "but kept in their notes.*"
+        ]
 
     settings.vault_path.mkdir(parents=True, exist_ok=True)
     digest_path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
