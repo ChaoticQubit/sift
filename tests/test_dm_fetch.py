@@ -15,7 +15,7 @@ import pytest
 from sift.guardrails.egress import is_instagram_post_url
 from sift.guardrails.injection import sanitize_untrusted
 from sift.guardrails.pii import mask_for_model
-from sift.ingest import dm_fetch
+from sift.ingest import cookie_fetch, dm_fetch
 from sift.ingest.dyi_export import _item_id, canonical_permalink
 from sift.models import IngestVia, Medium, RunReport
 
@@ -39,7 +39,7 @@ def fake_harvest(monkeypatch):
 
     seam = SimpleNamespace(messages=[], raises=None)
 
-    def _fake(settings, report):
+    def _fake(settings):
         if seam.raises is not None:
             raise seam.raises
         return list(seam.messages)
@@ -112,7 +112,7 @@ def test_empty_message_skipped_and_counted(ig_settings, fake_harvest):
     ]
     items, report = _pull(ig_settings)
     assert [i.permalink for i in items] == [POST]
-    assert report.errors  # the empty one is logged + counted, never silently dropped
+    assert report.errors
 
 
 def test_ig_post_url_routes_to_media_enrichment(ig_settings, fake_harvest):
@@ -121,6 +121,13 @@ def test_ig_post_url_routes_to_media_enrichment(ig_settings, fake_harvest):
     fake_harvest.messages = [{"url": POST, "text": "", "ts": 1_700_000_000.0}]
     [item], _ = _pull(ig_settings)
     assert is_instagram_post_url(item.permalink)
+
+
+def test_unknown_timestamp_leaves_saved_at_none(ig_settings, fake_harvest):
+    """ts unreadable in the DOM -> saved_at None (matches dyi_export), never the run-day."""
+    fake_harvest.messages = [{"url": POST, "text": "x", "ts": 0.0}]
+    [item], _ = _pull(ig_settings)
+    assert item.saved_at is None
 
 
 # ---------------------------------------------------------------- watermark
@@ -137,12 +144,23 @@ def test_watermark_advances_and_filters_seen(ig_settings, fake_harvest):
 
     _stale(ig_settings, dm_fetch._LAST_RUN_FILE, dm_fetch._LAST_ATTEMPT_FILE)
     fake_harvest.messages = [
-        {"url": POST2, "text": "b", "ts": 150.0},  # below watermark -> filtered
+        {"url": POST2, "text": "b", "ts": 150.0},
         {"url": "https://www.instagram.com/p/POST0003/", "text": "c", "ts": 300.0},
     ]
     items2, _ = _pull(ig_settings)
     assert [i.permalink for i in items2] == ["https://www.instagram.com/p/POST0003/"]
     assert float((_work(ig_settings) / dm_fetch._WATERMARK_FILE).read_text()) == 300.0
+
+
+def test_message_at_watermark_boundary_still_ingested(ig_settings, fake_harvest):
+    """A new message whose coarse timestamp equals the watermark must still reach the
+    ledger — the boundary is inclusive (>=), the ledger owns idempotency."""
+    work = _work(ig_settings)
+    work.mkdir(parents=True, exist_ok=True)
+    (work / dm_fetch._WATERMARK_FILE).write_text("200.0")
+    fake_harvest.messages = [{"url": POST, "text": "x", "ts": 200.0}]
+    items, _ = _pull(ig_settings)
+    assert [i.permalink for i in items] == [POST]
 
 
 def test_unknown_timestamp_messages_are_not_watermark_filtered(
@@ -153,6 +171,17 @@ def test_unknown_timestamp_messages_are_not_watermark_filtered(
     (_work(ig_settings)).mkdir(parents=True, exist_ok=True)
     (_work(ig_settings) / dm_fetch._WATERMARK_FILE).write_text("500.0")
     fake_harvest.messages = [{"url": POST, "text": "x", "ts": 0.0}]
+    items, _ = _pull(ig_settings)
+    assert [i.permalink for i in items] == [POST]
+
+
+def test_corrupt_watermark_resets_instead_of_blackout(ig_settings, fake_harvest):
+    """A non-finite ('inf') or implausibly-future watermark is a poison value that would
+    filter out every real second-scale ts forever; _read_watermark resets it to 0.0."""
+    work = _work(ig_settings)
+    work.mkdir(parents=True, exist_ok=True)
+    (work / dm_fetch._WATERMARK_FILE).write_text("inf")
+    fake_harvest.messages = [{"url": POST, "text": "x", "ts": 1_700_000_000.0}]
     items, _ = _pull(ig_settings)
     assert [i.permalink for i in items] == [POST]
 
@@ -196,6 +225,39 @@ def test_lock_prevents_parallel_session(ig_settings, fake_harvest):
         held.close()
 
 
+def test_shared_account_lock_blocks_across_adapters(ig_settings, fake_harvest):
+    """cookie_fetch and dm_fetch touch one account, so they share ONE lock: a cookie_fetch
+    run in progress must block dm_fetch (no two concurrent authenticated sessions)."""
+    assert dm_fetch._LOCK_FILE == cookie_fetch._LOCK_FILE
+    work = _work(ig_settings)
+    work.mkdir(parents=True, exist_ok=True)
+    held = (work / cookie_fetch._LOCK_FILE).open("w")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(RuntimeError, match="account lock|already in progress"):
+            _pull(ig_settings)
+    finally:
+        held.close()
+
+
+def test_login_refuses_when_account_lock_held(ig_settings, monkeypatch):
+    """`sift dm-login` must not open a second Chromium over the profile while a fetch holds
+    the account lock — that concurrent access corrupts the session it is meant to seed.
+    """
+    monkeypatch.setattr(dm_fetch, "_playwright_available", lambda: True)
+    work = _work(ig_settings)
+    work.mkdir(parents=True, exist_ok=True)
+    held = (work / dm_fetch._LOCK_FILE).open("w")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(
+            RuntimeError, match="already running|one session|in progress"
+        ):
+            dm_fetch.login(ig_settings)
+    finally:
+        held.close()
+
+
 def test_playwright_missing_refused(ig_settings, monkeypatch):
     monkeypatch.setattr(dm_fetch, "_playwright_available", lambda: False)
     with pytest.raises(RuntimeError, match="playwright"):
@@ -211,8 +273,7 @@ def test_challenge_detected_pauses_and_reports(ig_settings, fake_harvest):
     assert items == []
     assert report.errors
     pause = json.loads((_work(ig_settings) / dm_fetch._PAUSE_FILE).read_text())
-    assert pause["days"] == 1  # first strike of the ladder
-    # a clean-run success stamp must NOT be written on a challenge
+    assert pause["days"] == 1
     assert not (_work(ig_settings) / dm_fetch._LAST_RUN_FILE).exists()
 
 
@@ -229,6 +290,18 @@ def test_challenge_backoff_doubles(ig_settings, fake_harvest):
     assert json.loads((work / dm_fetch._PAUSE_FILE).read_text())["days"] == 4
 
 
+def test_transient_harvest_error_leaves_state_unchanged(ig_settings, fake_harvest):
+    """A generic (non-challenge) harvest error yields nothing and touches no state — no
+    success stamp, no back-off pause — so the next scheduled run simply retries."""
+    fake_harvest.raises = RuntimeError("nav timeout")
+    items, report = _pull(ig_settings)
+    assert items == []
+    assert report.errors
+    work = _work(ig_settings)
+    assert not (work / dm_fetch._LAST_RUN_FILE).exists()
+    assert not (work / dm_fetch._PAUSE_FILE).exists()
+
+
 def test_clean_run_resets_backoff_and_stamps_success(ig_settings, fake_harvest):
     work = _work(ig_settings)
     work.mkdir(parents=True, exist_ok=True)
@@ -240,7 +313,7 @@ def test_clean_run_resets_backoff_and_stamps_success(ig_settings, fake_harvest):
     fake_harvest.messages = [{"url": POST, "text": "ok", "ts": 100.0}]
     items, _ = _pull(ig_settings)
     assert len(items) == 1
-    assert not (work / dm_fetch._PAUSE_FILE).exists()  # clean run clears the ladder
+    assert not (work / dm_fetch._PAUSE_FILE).exists()
     assert (work / dm_fetch._LAST_RUN_FILE).exists()
 
 
@@ -256,9 +329,8 @@ def test_dm_caption_injection_and_pii_neutralized(ig_settings, fake_harvest):
         }
     ]
     [item], _ = _pull(ig_settings)
-    # The vault keeps the caption verbatim (untrusted bytes preserved for the human)...
+    assert item.ingest_via is IngestVia.dm_fetch
     assert "a@b.co" in item.caption and "![" in item.caption
-    # ...while the shared guardrail funcs neutralize the model/embed-bound copy.
     assert "a@b.co" not in mask_for_model(item.caption)
     clean = sanitize_untrusted(item.caption)
     assert "![" not in clean and "](" not in clean and "\U000e0041" not in clean

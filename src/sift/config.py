@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -70,10 +71,21 @@ class Settings(BaseSettings):
     # Your own Instagram username: cookie_fetch targets
     # https://www.instagram.com/<ig_username>/saved/ (required for that source only).
     ig_username: str | None = None
+    dm_profile_dir: Path | None = None
 
     @property
     def resolved_work_dir(self) -> Path:
         return self.work_dir or self.vault_path / ".sift"
+
+    @property
+    def resolved_dm_profile_dir(self) -> Path:
+        """dm_fetch's browser profile (live IG cookies). Never defaults inside the
+        vault: an override wins, else XDG_STATE_HOME/sift, else ~/.local/state/sift."""
+        if self.dm_profile_dir is not None:
+            return self.dm_profile_dir
+        state_home = os.environ.get("XDG_STATE_HOME")
+        root = Path(state_home) if state_home else Path.home() / ".local" / "state"
+        return root / "sift" / "dm-profile"
 
 
 def load_settings() -> "Settings":

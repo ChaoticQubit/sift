@@ -16,10 +16,11 @@ CLAUDE.md gate 5):
   - 429 back-off: the first rate-limit marker pauses future runs for 1 day,
     doubling on each rate-limited run (2d, 4d, ... capped at 14d); a clean run
     resets the ladder. While paused, runs refuse and say until when.
-  - One run at a time: an exclusive lock on <work>/cookie-fetch.lock; a second
-    simultaneous run refuses instead of opening a parallel session
-    ("one persistent session" — DESIGN.md §4). The subprocess is also killed
-    after a generous timeout so a hung fetch cannot outlive into the next run.
+  - One session ACCOUNT-WIDE: an exclusive lock on <work>/instagram-account.lock,
+    shared with dm_fetch (they touch the same account) — a second simultaneous
+    account-touching run of EITHER adapter refuses instead of opening a parallel
+    session ("one persistent session" — DESIGN.md §4). The subprocess is also
+    killed after a generous timeout so a hung fetch cannot outlive into the next run.
   - Host scope: every recorded URL and every downloaded file's source host must be
     instagram.com / cdninstagram.com / fbcdn.net (subdomain-aware suffix match —
     guardrails/egress.py); anything else is logged, counted, and skipped.
@@ -90,7 +91,8 @@ _BACKOFF_CAP_DAYS = 14
 _SUBPROCESS_TIMEOUT = 4 * 3600
 _LAST_RUN_FILE = "cookie-fetch-last-run"
 _LAST_ATTEMPT_FILE = "cookie-fetch-last-attempt"
-_LOCK_FILE = "cookie-fetch.lock"
+ACCOUNT_LOCK_FILE = "instagram-account.lock"
+_LOCK_FILE = ACCOUNT_LOCK_FILE
 _PAUSE_FILE = "cookie-fetch-pause.json"
 _SLEEP_REQUEST = "6.0-12.0"  # extractor's own default range; floor is 3s
 # The exact strings the installed gallery-dl emits for rate limiting (module docstring).
