@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # https://www.instagram.com/<ig_username>/saved/ (required for that source only).
     ig_username: str | None = None
     dm_profile_dir: Path | None = None
+    dm_thread_url: str | None = None
 
     @property
     def resolved_work_dir(self) -> Path:

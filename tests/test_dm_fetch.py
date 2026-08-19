@@ -24,11 +24,12 @@ NOW = datetime(2026, 8, 19, 12, 0, tzinfo=UTC)
 REEL = "https://www.instagram.com/reel/ABC123/?igsh=junk"
 POST = "https://www.instagram.com/p/POST0001/"
 POST2 = "https://www.instagram.com/p/POST0002/"
+THREAD = "https://www.instagram.com/direct/t/17843817339132508/"
 
 
 @pytest.fixture
 def ig_settings(settings):
-    return settings.model_copy(update={"ig_username": "fake_user"})
+    return settings.model_copy(update={"dm_thread_url": THREAD})
 
 
 @pytest.fixture
@@ -189,9 +190,37 @@ def test_corrupt_watermark_resets_instead_of_blackout(ig_settings, fake_harvest)
 # ---------------------------------------------------------------- guards
 
 
-def test_missing_ig_username_refused(settings, fake_harvest):
-    with pytest.raises(RuntimeError, match="SIFT_IG_USERNAME"):
+def test_missing_thread_url_refused(settings, fake_harvest):
+    """dm_fetch opens the self-thread by its direct URL; with no SIFT_DM_THREAD_URL it
+    must refuse loudly rather than guess a thread."""
+    with pytest.raises(RuntimeError, match="SIFT_DM_THREAD_URL"):
         _pull(settings)
+
+
+def test_malformed_thread_url_refused(settings, fake_harvest):
+    """A thread URL on the wrong host fails closed — the authed browser must never be
+    pointed off Instagram (trust boundary)."""
+    bad = settings.model_copy(
+        update={"dm_thread_url": "https://evil.example/direct/t/17843817339132508/"}
+    )
+    with pytest.raises(RuntimeError, match="SIFT_DM_THREAD_URL"):
+        _pull(bad)
+
+
+def test_valid_thread_url_normalizes_and_rejects():
+    """The validator accepts only the exact direct-thread form and appends the trailing
+    slash; foreign host, wrong path, non-https, and empty all reject to None."""
+    base = "https://www.instagram.com/direct/t/17843817339132508"
+    assert dm_fetch._valid_thread_url(base) == base + "/"
+    assert dm_fetch._valid_thread_url(base + "/") == base + "/"
+    for bad in (
+        None,
+        "",
+        "https://evil.example/direct/t/1/",
+        "https://www.instagram.com/p/ABC123/",
+        "http://www.instagram.com/direct/t/17843817339132508/",
+    ):
+        assert dm_fetch._valid_thread_url(bad) is None
 
 
 def test_cadence_guard_refuses_within_window(ig_settings, fake_harvest):

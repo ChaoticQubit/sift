@@ -26,9 +26,11 @@ routes to the authenticated media queue; any other http(s) URL rides the credent
 SSRF-guarded link fetcher; a non-http(s) URL is dropped (the typed note, if any, survives).
 
 The Playwright harvest and `login` are the LIVE seam (mocked in tests). The pure core —
-guards, watermark, message->Item transform — is exercised offline; the DOM selectors below
-are tuned against a real session on first use (Instagram's DM DOM is obfuscated + login-walled,
-so it cannot be verified offline).
+guards, watermark, message->Item transform — is exercised offline. The self-thread is opened
+by its stable direct URL (SIFT_DM_THREAD_URL); its shared posts are read from the thread's own
+GraphQL responses, NOT the DOM — Instagram renders each share as a click-walled card with no
+permalink anchor, so the permalink survives only in the network payload (`target_url`). Both
+are login-walled and cannot be verified offline; they are tuned against a real session.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ import importlib.util
 import json
 import logging
 import math
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -59,6 +62,7 @@ logger = logging.getLogger(__name__)
 
 _TEXT_CAP = 10_000
 _MAX_SCROLLS = 300
+_STAGNANT_LIMIT = 3
 _MAX_MESSAGES = 5_000
 _NAV_TIMEOUT_MS = 45_000
 _LOGIN_WAIT_MS = 5 * 60 * 1000
@@ -77,8 +81,9 @@ _CHALLENGE_MARKERS = (
     "/accounts/suspended",
     "/accounts/disabled",
 )
-_POST_HREF = "a[href*='/p/'], a[href*='/reel/'], a[href*='/reels/'], a[href*='/tv/']"
-_SELF_THREAD_LABELS = ("Note to self", "Your notes", "Only you")
+_THREAD_URL_RE = re.compile(r"^https://www\.instagram\.com/direct/t/\d{5,25}/?$")
+_PERMALINK_RE = re.compile(r"/(p|reel|reels|tv)/([A-Za-z0-9_-]{7,15})/")
+_GRAPHQL_HINTS = ("/api/graphql", "/graphql/query", "direct_v2", "/api/v1/")
 
 
 class _ChallengeDetected(RuntimeError):
@@ -98,6 +103,21 @@ def _refuse(report: RunReport, msg: str) -> None:
     logger.error("dm_fetch: %s", msg)
     report.errors.append(f"dm_fetch: {msg}")
     raise RuntimeError(f"dm_fetch: {msg}")
+
+
+def _valid_thread_url(raw: str | None) -> str | None:
+    """Normalize + validate the configured self-thread URL, or None when unusable.
+
+    ONLY the exact https://www.instagram.com/direct/t/<digits>/ form is accepted: the
+    authenticated browser navigates straight here, so a stray host or path must never
+    slip through (trust boundary — a bad value fails closed, it does not get scraped).
+    """
+    if not raw:
+        return None
+    url = raw.strip()
+    if not _THREAD_URL_RE.match(url):
+        return None
+    return url if url.endswith("/") else url + "/"
 
 
 def _read_pause(work: Path) -> tuple[datetime | None, int | None]:
@@ -245,107 +265,119 @@ def _assert_logged_in(page) -> None:
         raise _ChallengeDetected(f"landed on {url} — session expired or checkpoint")
 
 
-def _open_self_thread(page, username: str) -> None:
-    """Open the note-to-self thread from the inbox. Logged-out is caught upstream by
-    _assert_logged_in; a miss here is a benign selector/UI drift (transient), not a challenge.
+def _open_self_thread(page, thread_url: str) -> None:
+    """Navigate straight to the note-to-self thread by its stable direct URL.
 
-    Match is EXACT (exact=True): a substring/first-match could click an unrelated
-    conversation whose title merely CONTAINS the username and then scrape it as if it
-    were the self-thread (the user chose self-thread-only). Fail-closed — an exact miss
-    raises and the run retries next cadence, never harvesting the wrong thread. Scoping
-    the search to the thread-list container + verifying the opened thread is deferred to
-    the live-selector tuning (BUILD_CHECKLIST F8)."""
+    The inbox list is virtualized + click-walled (rows are JS-click divs, no anchor) and
+    the note-to-self row is not reliably locatable by text, so the thread id — which does
+    not change — is the deterministic handle. A challenge redirect is turned into
+    _ChallengeDetected (ban-risk back-off engages); any OTHER redirect away from
+    /direct/t/ means the thread did not open (bad id / lost session) and fails closed, so
+    a wrong thread is never scraped."""
+    assert thread_url.startswith(
+        "https://www.instagram.com/direct/t/"
+    ), "validated thread url required"
+    page.goto(thread_url, wait_until="domcontentloaded")
+    page.wait_for_timeout(4000)
+    landed = page.url or ""
+    if any(marker in landed for marker in _CHALLENGE_MARKERS):
+        raise _ChallengeDetected(f"landed on {landed} — session expired or checkpoint")
+    if "/direct/t/" not in landed:
+        raise RuntimeError(
+            f"note-to-self thread did not open (redirected to {landed!r}); check "
+            "SIFT_DM_THREAD_URL and that the dedicated profile is still logged in"
+        )
+
+
+def _absorb_response(resp, collected: dict[str, dict]) -> None:
+    """Pull shared-post permalinks out of one thread GraphQL/API response into `collected`.
+
+    Shared posts render as click-walled cards; their permalink survives only in the
+    thread's own network payload (`target_url`), so the harvest reads the JSON, not the
+    DOM. Keyed by canonical permalink (reel/tv folded to /p/) so one post shared twice
+    collapses to one message. Bounded by _MAX_MESSAGES. Any error (a response already
+    gone during SPA churn) skips this body rather than aborting the harvest — every
+    permalink already collected survives."""
+    try:
+        if not any(hint in resp.url for hint in _GRAPHQL_HINTS):
+            return
+        content_type = resp.headers.get("content-type") or ""
+        if "json" not in content_type and "javascript" not in content_type:
+            return
+        body = resp.text().replace("\\/", "/")
+    except Exception:
+        return
+    for kind, code in _PERMALINK_RE.findall(body):
+        if len(collected) >= _MAX_MESSAGES:
+            return
+        url = f"https://www.instagram.com/{kind}/{code}/"
+        key = canonical_permalink(url)
+        if key not in collected:
+            collected[key] = {"url": url, "text": "", "ts": 0.0}
+
+
+def _scroll_thread(page, collected: dict[str, dict]) -> None:
+    """Scroll the open thread upward (bounded) so Instagram pages older history in; the
+    response listener (feeding `collected`) does the extraction.
+
+    Stops early once _STAGNANT_LIMIT consecutive passes add no new permalink (history
+    exhausted; the slack absorbs the async gap between a scroll and its GraphQL response)
+    or the _MAX_MESSAGES / _MAX_SCROLLS bound is hit — the browser can never run
+    unbounded. A wheel error (routine during SPA re-render) ends the scroll cleanly."""
     from playwright.sync_api import Error as PlaywrightError
 
-    assert username, "username required to locate the self-thread"
-    for label in (username, *_SELF_THREAD_LABELS):
-        try:
-            candidate = page.get_by_text(label, exact=True).first
-            if candidate.count() > 0:
-                candidate.click(timeout=_NAV_TIMEOUT_MS)
-                page.wait_for_timeout(1500)
-                return
-        except PlaywrightError:
-            continue
-    raise RuntimeError(
-        "could not locate the note-to-self thread (Instagram UI changed?)"
-    )
-
-
-def _scroll_and_extract(page) -> list[dict]:
-    """Scroll the open thread upward (bounded) and collect shared-post permalinks.
-
-    HONEST SCOPE (v1): captures the shared-post permalinks currently rendered in the
-    thread; ts is left 0.0 and typed-note text empty. Full-history backfill, the precise
-    wheel target (the message list is an inner scroll pane, not (0,0)), per-message
-    timestamps, and typed-note text are the deferred live-selector tuning
-    (BUILD_CHECKLIST F8). The permalink alone yields a full note via media enrichment.
-
-    A stale/detached ElementHandle (routine during SPA re-render) skips only that anchor
-    rather than aborting the run — every permalink already collected this pass survives.
-    """
-    from playwright.sync_api import Error as PlaywrightError
-
-    seen_hrefs: set[str] = set()
-    out: list[dict] = []
+    stagnant = 0
     previous_count = -1
     for _ in range(_MAX_SCROLLS):
-        for anchor in page.query_selector_all(_POST_HREF):
-            try:
-                href = anchor.get_attribute("href") or ""
-            except PlaywrightError:
-                continue
-            if not href or href in seen_hrefs:
-                continue
-            seen_hrefs.add(href)
-            url = (
-                href if href.startswith("http") else f"https://www.instagram.com{href}"
-            )
-            out.append({"url": url, "text": "", "ts": 0.0})
-            if len(out) >= _MAX_MESSAGES:
-                return out
-        if len(seen_hrefs) == previous_count:
+        if len(collected) >= _MAX_MESSAGES:
             break
-        previous_count = len(seen_hrefs)
+        if len(collected) == previous_count:
+            stagnant += 1
+            if stagnant >= _STAGNANT_LIMIT:
+                break
+        else:
+            stagnant = 0
+        previous_count = len(collected)
         try:
-            page.mouse.move(640, 450)
-            page.mouse.wheel(0, -3000)
-            page.wait_for_timeout(800)
+            page.mouse.move(850, 430)
+            page.mouse.wheel(0, -2500)
+            page.wait_for_timeout(1000)
         except PlaywrightError:
             break
-    assert len(out) == len(seen_hrefs), "one out entry per unique href"
-    assert len(out) <= _MAX_MESSAGES, "harvest exceeded its bound"
-    return out
+    assert len(collected) <= _MAX_MESSAGES, "harvest exceeded its bound"
 
 
 def _harvest(settings: Settings) -> list[dict]:
-    """LIVE: open the self-thread in the dedicated profile and return raw messages.
-    Offline tests monkeypatch this whole function (no browser, no network).
+    """LIVE: open the self-thread by direct URL in the dedicated profile and return raw
+    messages read from its GraphQL responses. Offline tests monkeypatch this whole
+    function (no browser, no network).
 
-    Login state is asserted BEFORE and AFTER the scroll: a checkpoint that Instagram
-    raises mid-run navigates the page to a challenge URL, and the post-harvest check
-    turns that into a _ChallengeDetected so the ban-risk back-off engages instead of the
-    run being recorded as clean. context.close() is isolated so a teardown error cannot
-    mask that challenge and downgrade it to a 'transient' error."""
+    A response listener is attached BEFORE navigation so the thread's initial page-load
+    payload (the newest messages) is captured, then bounded scrolling pages older history
+    in. Login state is asserted AFTER the scroll: a checkpoint Instagram raises mid-run
+    navigates the page to a challenge URL, turned into a _ChallengeDetected so the
+    ban-risk back-off engages instead of the run recording as clean. context.close() is
+    isolated so a teardown error cannot mask that challenge."""
     from playwright.sync_api import sync_playwright
 
-    username = settings.ig_username
-    assert username, "ig_username must be validated before _harvest"
+    thread_url = _valid_thread_url(settings.dm_thread_url)
+    assert thread_url, "dm_thread_url must be validated before _harvest"
+    collected: dict[str, dict] = {}
     with sync_playwright() as pw:
         context = _launch_context(pw, settings, visible=False)
         try:
             page = context.new_page()
-            page.goto(_INBOX_URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            page.on("response", lambda resp: _absorb_response(resp, collected))
+            _open_self_thread(page, thread_url)
             _assert_logged_in(page)
-            _open_self_thread(page, username)
-            messages = _scroll_and_extract(page)
+            _scroll_thread(page, collected)
             _assert_logged_in(page)
         finally:
             try:
                 context.close()
             except Exception as exc:
                 logger.warning("dm_fetch: browser close failed after harvest (%s)", exc)
+    messages = list(collected.values())
     assert len(messages) <= _MAX_MESSAGES, "harvest exceeded its bound"
     return messages
 
@@ -474,11 +506,12 @@ def pull(
         ):
             _refuse(report, msg)
 
-        if not settings.ig_username:
+        if _valid_thread_url(settings.dm_thread_url) is None:
             _refuse(
                 report,
-                "SIFT_IG_USERNAME is not set; dm_fetch needs it to find your note-to-self "
-                "thread — set it in .env",
+                "SIFT_DM_THREAD_URL is not set or malformed; dm_fetch opens your "
+                "note-to-self thread by direct URL — set it in .env to the form "
+                "https://www.instagram.com/direct/t/<thread_id>/",
             )
         if not _playwright_available():
             _refuse(
