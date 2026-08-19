@@ -16,10 +16,11 @@ CLAUDE.md gate 5):
   - 429 back-off: the first rate-limit marker pauses future runs for 1 day,
     doubling on each rate-limited run (2d, 4d, ... capped at 14d); a clean run
     resets the ladder. While paused, runs refuse and say until when.
-  - One run at a time: an exclusive lock on <work>/cookie-fetch.lock; a second
-    simultaneous run refuses instead of opening a parallel session
-    ("one persistent session" — DESIGN.md §4). The subprocess is also killed
-    after a generous timeout so a hung fetch cannot outlive into the next run.
+  - One session ACCOUNT-WIDE: an exclusive lock on <work>/instagram-account.lock,
+    shared with dm_fetch (they touch the same account) — a second simultaneous
+    account-touching run of EITHER adapter refuses instead of opening a parallel
+    session ("one persistent session" — DESIGN.md §4). The subprocess is also
+    killed after a generous timeout so a hung fetch cannot outlive into the next run.
   - Host scope: every recorded URL and every downloaded file's source host must be
     instagram.com / cdninstagram.com / fbcdn.net (subdomain-aware suffix match —
     guardrails/egress.py); anything else is logged, counted, and skipped.
@@ -90,7 +91,8 @@ _BACKOFF_CAP_DAYS = 14
 _SUBPROCESS_TIMEOUT = 4 * 3600
 _LAST_RUN_FILE = "cookie-fetch-last-run"
 _LAST_ATTEMPT_FILE = "cookie-fetch-last-attempt"
-_LOCK_FILE = "cookie-fetch.lock"
+ACCOUNT_LOCK_FILE = "instagram-account.lock"
+_LOCK_FILE = ACCOUNT_LOCK_FILE
 _PAUSE_FILE = "cookie-fetch-pause.json"
 _SLEEP_REQUEST = "6.0-12.0"  # extractor's own default range; floor is 3s
 # The exact strings the installed gallery-dl emits for rate limiting (module docstring).
@@ -102,8 +104,13 @@ _USERNAME = re.compile(r"[A-Za-z0-9._]{1,30}")
 # ------------------------------------------------------------------ pure guard logic
 
 
-def cadence_refusal(last_run: datetime | None, now: datetime) -> str | None:
-    """None = allowed; else the actionable refusal message (< 20h since last success)."""
+def cadence_refusal(
+    last_run: datetime | None, now: datetime, who: str = "cookie_fetch"
+) -> str | None:
+    """None = allowed; else the actionable refusal message (< 20h since last success).
+
+    `who` names the calling adapter so a sibling (dm_fetch) reuses the same 20h policy
+    without the message misattributing the refusal to cookie_fetch."""
     if last_run is None:
         return None
     elapsed = now - last_run
@@ -111,20 +118,23 @@ def cadence_refusal(last_run: datetime | None, now: datetime) -> str | None:
         return None
     next_ok = last_run + timedelta(hours=_MIN_GAP_HOURS)
     return (
-        f"cookie_fetch last succeeded {elapsed.total_seconds() / 3600:.1f}h ago; "
+        f"{who} last succeeded {elapsed.total_seconds() / 3600:.1f}h ago; "
         f"refusing to fetch again within {_MIN_GAP_HOURS}h (weekly default, daily "
         f"ceiling, never hourly — DESIGN.md §4). "
         f"Try again after {next_ok:%Y-%m-%d %H:%M} UTC."
     )
 
 
-def attempt_refusal(last_attempt: datetime | None, now: datetime) -> str | None:
+def attempt_refusal(
+    last_attempt: datetime | None, now: datetime, who: str = "cookie_fetch"
+) -> str | None:
     """None = allowed; else refusal: < 4h since the last ATTEMPT, successful or not.
 
     The success-only cadence gate never engages while a session is broken (expired
     cookies, extractor breakage) — this floor is what keeps a misconfigured hourly
     job from launching a real authenticated fetch every hour in exactly the
-    repeated-broken-auth pattern that flags accounts."""
+    repeated-broken-auth pattern that flags accounts. `who` names the calling adapter.
+    """
     if last_attempt is None:
         return None
     elapsed = now - last_attempt
@@ -132,7 +142,7 @@ def attempt_refusal(last_attempt: datetime | None, now: datetime) -> str | None:
         return None
     next_ok = last_attempt + timedelta(hours=_MIN_ATTEMPT_GAP_HOURS)
     return (
-        f"cookie_fetch last attempted a fetch {elapsed.total_seconds() / 3600:.1f}h "
+        f"{who} last attempted a fetch {elapsed.total_seconds() / 3600:.1f}h "
         f"ago and it did not succeed; refusing another attempt within "
         f"{_MIN_ATTEMPT_GAP_HOURS}h — repeated launches with a broken session look "
         f"bot-like (DESIGN.md §4). Fix the cause (check cookies / login), then try "
@@ -140,13 +150,20 @@ def attempt_refusal(last_attempt: datetime | None, now: datetime) -> str | None:
     )
 
 
-def backoff_refusal(pause_until: datetime | None, now: datetime) -> str | None:
-    """None = allowed; else the refusal message naming when the 429 pause ends."""
+def backoff_refusal(
+    pause_until: datetime | None,
+    now: datetime,
+    who: str = "cookie_fetch",
+    reason: str = "Instagram rate-limiting (HTTP 429)",
+) -> str | None:
+    """None = allowed; else the refusal message naming when the pause ends. `who`/`reason`
+    let a sibling (dm_fetch, paused by a login/checkpoint challenge) reuse the ladder.
+    """
     if pause_until is None or now >= pause_until:
         return None
     return (
-        f"cookie_fetch is paused until {pause_until:%Y-%m-%d %H:%M} UTC after "
-        "Instagram rate-limiting (HTTP 429); wait it out — retrying sooner raises "
+        f"{who} is paused until {pause_until:%Y-%m-%d %H:%M} UTC after "
+        f"{reason}; wait it out — retrying sooner raises "
         "ban risk (DESIGN.md §4)."
     )
 

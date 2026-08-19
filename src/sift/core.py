@@ -159,7 +159,7 @@ def run(
 ) -> RunReport:
     """Ingest via one adapter and process NEW items into the vault.
 
-    source: "cookie_fetch" | "share_capture" | "dyi_export"  (DESIGN.md §4)
+    source: "cookie_fetch" | "share_capture" | "dyi_export" | "dm_fetch"  (DESIGN.md §4)
     path:   the export ZIP path for dyi_export; unused otherwise.
     defer_media: overrides settings.media_defer for this run (None = use the setting).
 
@@ -173,12 +173,13 @@ def run(
     backfill (`sift fetch-media`) fetches their media and runs the one full analysis.
     """
     from .db import storage
-    from .ingest import cookie_fetch, dyi_export, share_capture
+    from .ingest import cookie_fetch, dm_fetch, dyi_export, share_capture
 
     adapters = {
         "cookie_fetch": cookie_fetch,
         "share_capture": share_capture,
         "dyi_export": dyi_export,
+        "dm_fetch": dm_fetch,
     }
     if source not in adapters:
         raise ValueError(

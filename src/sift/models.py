@@ -22,6 +22,7 @@ class IngestVia(str, Enum):
     cookie_fetch = "cookie_fetch"
     share_capture = "share_capture"
     dyi_export = "dyi_export"
+    dm_fetch = "dm_fetch"
 
 
 class Item(BaseModel):

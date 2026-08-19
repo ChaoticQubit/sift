@@ -283,7 +283,7 @@ def test_concurrent_run_refused_by_lock(ig_settings, fake_gdl):
 
     work = _work(ig_settings)
     work.mkdir(parents=True, exist_ok=True)
-    holder = (work / "cookie-fetch.lock").open("w")
+    holder = (work / cookie_fetch._LOCK_FILE).open("w")
     fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the "other" run
     try:
         report = RunReport()
