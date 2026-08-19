@@ -63,6 +63,7 @@ logger = logging.getLogger(__name__)
 _TEXT_CAP = 10_000
 _MAX_SCROLLS = 300
 _STAGNANT_LIMIT = 3
+_SCROLL_PAUSE_MS = 3_000
 _MAX_MESSAGES = 5_000
 _NAV_TIMEOUT_MS = 45_000
 _LOGIN_WAIT_MS = 5 * 60 * 1000
@@ -81,9 +82,12 @@ _CHALLENGE_MARKERS = (
     "/accounts/suspended",
     "/accounts/disabled",
 )
-_THREAD_URL_RE = re.compile(r"^https://www\.instagram\.com/direct/t/\d{5,25}/?$")
-_PERMALINK_RE = re.compile(r"/(p|reel|reels|tv)/([A-Za-z0-9_-]{7,15})/")
-_GRAPHQL_HINTS = ("/api/graphql", "/graphql/query", "direct_v2", "/api/v1/")
+_THREAD_URL_RE = re.compile(r"^https://www\.instagram\.com/direct/t/[0-9]{5,25}/?$")
+_THREAD_ID_RE = re.compile(r"/direct/t/([0-9]+)")
+_TARGET_URL_RE = re.compile(
+    r'"target_url":"https://www\.instagram\.com/(p|reel|reels|tv)/([A-Za-z0-9_-]{5,64})/'
+)
+_GRAPHQL_HINTS = ("/api/graphql", "/graphql/query")
 
 
 class _ChallengeDetected(RuntimeError):
@@ -118,6 +122,14 @@ def _valid_thread_url(raw: str | None) -> str | None:
     if not _THREAD_URL_RE.match(url):
         return None
     return url if url.endswith("/") else url + "/"
+
+
+def _thread_id(url: str | None) -> str | None:
+    """The numeric thread id in a /direct/t/<id>/ URL, or None. Used to (1) confirm the
+    browser actually landed on the CONFIGURED thread and (2) scope harvested responses to
+    this thread only, so another conversation's inbox preview is never scraped."""
+    match = _THREAD_ID_RE.search(url or "")
+    return match.group(1) if match else None
 
 
 def _read_pause(work: Path) -> tuple[datetime | None, int | None]:
@@ -266,38 +278,49 @@ def _assert_logged_in(page) -> None:
 
 
 def _open_self_thread(page, thread_url: str) -> None:
-    """Navigate straight to the note-to-self thread by its stable direct URL.
+    """Navigate straight to the note-to-self thread by its stable direct URL, and confirm
+    the browser landed on THAT EXACT thread id.
 
     The inbox list is virtualized + click-walled (rows are JS-click divs, no anchor) and
     the note-to-self row is not reliably locatable by text, so the thread id — which does
     not change — is the deterministic handle. A challenge redirect is turned into
-    _ChallengeDetected (ban-risk back-off engages); any OTHER redirect away from
-    /direct/t/ means the thread did not open (bad id / lost session) and fails closed, so
-    a wrong thread is never scraped."""
-    assert thread_url.startswith(
-        "https://www.instagram.com/direct/t/"
-    ), "validated thread url required"
+    _ChallengeDetected (ban-risk back-off engages). The landed thread id must equal the
+    configured one: a stale / mistyped / server-canonicalized id lands on a DIFFERENT real
+    conversation, and matching only '/direct/t/' would then scrape someone else's chat as
+    if it were the self-thread. An id mismatch fails closed, so a wrong thread is never
+    scraped (privacy + scope, DESIGN §4)."""
+    want_id = _thread_id(thread_url)
+    assert want_id, "validated thread url must contain a numeric id"
     page.goto(thread_url, wait_until="domcontentloaded")
     page.wait_for_timeout(4000)
     landed = page.url or ""
     if any(marker in landed for marker in _CHALLENGE_MARKERS):
         raise _ChallengeDetected(f"landed on {landed} — session expired or checkpoint")
-    if "/direct/t/" not in landed:
+    got_id = _thread_id(landed)
+    if got_id != want_id:
         raise RuntimeError(
-            f"note-to-self thread did not open (redirected to {landed!r}); check "
-            "SIFT_DM_THREAD_URL and that the dedicated profile is still logged in"
+            f"note-to-self thread did not open (landed on thread {got_id!r}, expected "
+            f"{want_id!r}); check SIFT_DM_THREAD_URL and that the dedicated profile is "
+            "still logged in"
         )
 
 
-def _absorb_response(resp, collected: dict[str, dict]) -> None:
-    """Pull shared-post permalinks out of one thread GraphQL/API response into `collected`.
+def _absorb_response(resp, collected: dict[str, dict], thread_id: str) -> None:
+    """Pull THIS thread's shared-post permalinks out of one response into `collected`.
 
-    Shared posts render as click-walled cards; their permalink survives only in the
-    thread's own network payload (`target_url`), so the harvest reads the JSON, not the
-    DOM. Keyed by canonical permalink (reel/tv folded to /p/) so one post shared twice
-    collapses to one message. Bounded by _MAX_MESSAGES. Any error (a response already
-    gone during SPA churn) skips this body rather than aborting the harvest — every
-    permalink already collected survives."""
+    Two scoping layers keep out everything the user did not self-DM (the desktop DM page
+    also fetches other threads' inbox previews, the explore/reels tray, and notifications —
+    all of which carry permalinks):
+      1. the response body must mention the configured `thread_id`, so another
+         conversation's preview or an explore payload is ignored; and
+      2. only a share's own `target_url` field is read (the permalink Instagram attaches to
+         a DM'd post) — NOT any /p/ substring, which would also match suggested content, a
+         thumbnail href, or a permalink someone merely typed.
+    Both were validated against real captured payloads: together they yield exactly the
+    shared posts, zero decoys. Keyed by canonical permalink (reel/tv folded to /p/) so one
+    post shared twice collapses to one message; bounded by _MAX_MESSAGES. A body that
+    cannot be read (evicted during SPA churn) is logged and skipped, never silently
+    dropped (CLAUDE.md), and never aborts the harvest."""
     try:
         if not any(hint in resp.url for hint in _GRAPHQL_HINTS):
             return
@@ -305,9 +328,12 @@ def _absorb_response(resp, collected: dict[str, dict]) -> None:
         if "json" not in content_type and "javascript" not in content_type:
             return
         body = resp.text().replace("\\/", "/")
-    except Exception:
+    except Exception as exc:
+        logger.debug("dm_fetch: skipped an unreadable thread response (%s)", exc)
         return
-    for kind, code in _PERMALINK_RE.findall(body):
+    if thread_id not in body:
+        return
+    for kind, code in _TARGET_URL_RE.findall(body):
         if len(collected) >= _MAX_MESSAGES:
             return
         url = f"https://www.instagram.com/{kind}/{code}/"
@@ -323,7 +349,9 @@ def _scroll_thread(page, collected: dict[str, dict]) -> None:
     Stops early once _STAGNANT_LIMIT consecutive passes add no new permalink (history
     exhausted; the slack absorbs the async gap between a scroll and its GraphQL response)
     or the _MAX_MESSAGES / _MAX_SCROLLS bound is hit — the browser can never run
-    unbounded. A wheel error (routine during SPA re-render) ends the scroll cleanly."""
+    unbounded. Each pass waits _SCROLL_PAUSE_MS so the scroll-driven history fetches stay
+    at the account-safety request floor (DESIGN §4), not a rapid burst. A wheel error
+    (routine during SPA re-render) ends the scroll cleanly."""
     from playwright.sync_api import Error as PlaywrightError
 
     stagnant = 0
@@ -341,7 +369,7 @@ def _scroll_thread(page, collected: dict[str, dict]) -> None:
         try:
             page.mouse.move(850, 430)
             page.mouse.wheel(0, -2500)
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(_SCROLL_PAUSE_MS)
         except PlaywrightError:
             break
     assert len(collected) <= _MAX_MESSAGES, "harvest exceeded its bound"
@@ -357,17 +385,28 @@ def _harvest(settings: Settings) -> list[dict]:
     in. Login state is asserted AFTER the scroll: a checkpoint Instagram raises mid-run
     navigates the page to a challenge URL, turned into a _ChallengeDetected so the
     ban-risk back-off engages instead of the run recording as clean. context.close() is
-    isolated so a teardown error cannot mask that challenge."""
+    isolated so a teardown error cannot mask that challenge.
+
+    A harvest that opened the thread but extracted NOTHING raises (never returns []): an
+    empty result would otherwise be recorded as a clean run — clearing the back-off and
+    stamping success — while ingestion silently black-holes on a payload-shape drift. The
+    self-thread is never legitimately empty (it is where the posts live), so zero captures
+    means the extraction broke; the caller turns the raise into a logged, state-preserving
+    transient error that simply retries next cadence (never a silent empty result)."""
     from playwright.sync_api import sync_playwright
 
     thread_url = _valid_thread_url(settings.dm_thread_url)
     assert thread_url, "dm_thread_url must be validated before _harvest"
+    thread_id = _thread_id(thread_url)
+    assert thread_id, "validated thread url must contain a numeric id"
     collected: dict[str, dict] = {}
     with sync_playwright() as pw:
         context = _launch_context(pw, settings, visible=False)
         try:
             page = context.new_page()
-            page.on("response", lambda resp: _absorb_response(resp, collected))
+            page.on(
+                "response", lambda resp: _absorb_response(resp, collected, thread_id)
+            )
             _open_self_thread(page, thread_url)
             _assert_logged_in(page)
             _scroll_thread(page, collected)
@@ -379,6 +418,12 @@ def _harvest(settings: Settings) -> list[dict]:
                 logger.warning("dm_fetch: browser close failed after harvest (%s)", exc)
     messages = list(collected.values())
     assert len(messages) <= _MAX_MESSAGES, "harvest exceeded its bound"
+    if not messages:
+        raise RuntimeError(
+            "opened the self-thread but extracted zero shared posts — Instagram's thread "
+            "payload shape may have drifted; refusing to record a clean run over a silent "
+            "empty result (state unchanged, next cadence retries)"
+        )
     return messages
 
 
