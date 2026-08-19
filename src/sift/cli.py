@@ -23,7 +23,7 @@ def run(
         "instead of caption-only analysis (default: SIFT_MEDIA_DEFER).",
     ),
 ) -> None:
-    """Ingest + process. source: cookie_fetch | share_capture | dyi_export."""
+    """Ingest + process. source: cookie_fetch | share_capture | dyi_export | dm_fetch."""
     from . import core
 
     report = core.run(
@@ -96,6 +96,22 @@ def serve(host: str = "127.0.0.1", port: int = 8595) -> None:
     from .ingest import share_capture
 
     share_capture.serve(load_settings(), host=host, port=port)
+
+
+@app.command()
+def dm_login() -> None:
+    """Log in (or re-authenticate) the dedicated Sift browser profile dm_fetch uses.
+
+    Opens Instagram on-screen in that profile; finish the login and the session persists
+    for `sift run --source dm_fetch`. Re-run whenever a scheduled dm_fetch run reports a
+    login/checkpoint challenge.
+    """
+    from .ingest import dm_fetch
+
+    dm_fetch.login(load_settings())
+    typer.echo(
+        "dm_fetch: login complete — profile ready for `sift run --source dm_fetch`."
+    )
 
 
 if __name__ == "__main__":

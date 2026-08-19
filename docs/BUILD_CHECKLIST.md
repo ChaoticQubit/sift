@@ -50,6 +50,10 @@ Phased, checkbox tasks for Claude Code. Ship each phase before the next. ⭐ = s
 ## F7 — share_capture `[M]`  dep: F0.5
 - [ ] `ingest/share_capture.py` + a small capture endpoint; iOS/Android Share-Sheet/Shortcut + browser action → writes shared posts + notes into Sift. *Done = tapping Share files a note in real time; replaces self-DM.*
 
+## F8 — dm_fetch: proactive self-DM sync `[M]`  dep: F2, F0.5
+- [x] `ingest/dm_fetch.py` — read-only Playwright open of the **note-to-self thread only** on a dedicated Sift profile (headed, parked off-screen); new posts' permalinks (+ any typed note) → `Item(ingest_via=dm_fetch)`; full caption/media fill in via the existing media-defer → gallery-dl path (dm_fetch never opens a post). Reuses cookie_fetch's cadence/attempt/back-off/lock rig (`who=` param); a login/checkpoint challenge stops the run and grows back-off, **never auto-solved**. `sift dm-login` seeds / re-auths the profile. Wired into `core.run(source="dm_fetch")`. Offline tests mock the Playwright seam (`test_dm_fetch.py`) incl. the mandatory injection+PII guardrail case.
+- [ ] Live selector tuning: `_open_self_thread` / `_scroll_and_extract` DOM selectors + per-message timestamp + typed-note text validated against a real logged-in session; weekly launchd/cron doc. *Done = a scheduled run pulls only NEW self-DM'd posts, read-only, home IP, backs off on a challenge.*
+
 ---
 
 ## v-next (DEFERRED)

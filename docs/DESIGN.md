@@ -81,6 +81,7 @@ It is built as a **deterministic pipeline around one quarantined Agno interprete
 | `cookie_fetch` | **Saved posts** (recurring) | Full (weekly cron/launchd) | **Low, non-zero** | `gallery-dl --cookies-from-browser` on the Instagram `saved` extractor, run on **your machine + home IP**; captions via metadata postprocessor; `--download-archive` for incremental. Read-only. Playwright fallback if web GraphQL shifts. |
 | `share_capture` | **New items** going forward | Full, real-time | **Zero** | A Share-Sheet/Shortcut (iOS/Android) + browser action that writes shared posts + typed notes straight into Sift's capture endpoint — replaces the "DM myself" habit. |
 | `dyi_export` | **Backfill + full self-DM history** | Semi (occasional, reminder-driven) | **Zero** | Parse the official "Download Your Information" ZIP locally — it contains saved posts, the self-DM thread, and captions. Seeds history; the only safe route to already-sent DMs. |
+| `dm_fetch` | **New self-DM'd posts** (recurring) | Full (weekly cron/launchd) | **Low, non-zero** | Read-only Playwright open of your **note-to-self thread only**, on a **dedicated Sift browser profile** logged in once by hand, on **your machine + home IP**, headed but parked off-screen. Harvests new posts' permalinks (+ any typed note); full caption/media fill in via the same media-defer → gallery-dl path (dm_fetch never opens a post). The one recurring authenticated DM read (decided 2026-08-19); a login/checkpoint challenge → stop + back-off, **never auto-solved**. |
 
 **Safety rules baked into `cookie_fetch` (and any account-touching code):**
 - **Read-only only.** Never like/follow/comment/DM — write actions trigger most bans.
@@ -88,7 +89,7 @@ It is built as a **deterministic pipeline around one quarantined Agno interprete
 - **Incremental diffing** so each run is a handful of requests; `sleep-request ≥ 3s`; **one persistent session** (never automated fresh logins); **exponential back-off (pause days) on the first HTTP 429**.
 - Runs on the user's residential IP, never a cloud/datacenter IP.
 
-**Honest statement:** `cookie_fetch` is still unofficial (ToS) and carries *some* risk on the main account. It is materially lower-risk than `instagrapi` (real web session, home IP, read-only, low cadence, few requests), and the zero-risk adapters (`share_capture`, `dyi_export`) carry the DMs and new items — so the strategic direction is to lean on `share_capture` over time and let `cookie_fetch` be the backfill-the-old-saves workhorse.
+**Honest statement:** `cookie_fetch` is still unofficial (ToS) and carries *some* risk on the main account. It is materially lower-risk than `instagrapi` (real web session, home IP, read-only, low cadence, few requests), and the zero-risk adapters (`share_capture`, `dyi_export`) carry the DMs and new items — so the strategic direction is to lean on `share_capture` over time and let `cookie_fetch` be the backfill-the-old-saves workhorse. `dm_fetch` (decided 2026-08-19) adds a *proactive, no-habit-change* recurring path for new self-DM'd posts, at the same low-but-non-zero profile as `cookie_fetch` (read-only, home IP, low cadence, single session, hard back-off, challenge → stop). It uses a real browser on a dedicated profile (most human fingerprint) rather than a scraper client, and touches **only** the self-thread; `dyi_export` remains the only route to already-sent DM history. Randomised multi-transport / anti-detection evasion was explicitly rejected (2026-08-19): at this volume the discriminating signal is fingerprint + endpoint, not timing, and rotation raises surface — consistency + minimal requests + fast retreat is the actual risk lever.
 
 ---
 
@@ -104,6 +105,7 @@ flowchart TD
       A1[cookie_fetch<br/>weekly, saved folder] 
       A2[share_capture<br/>real-time, new items]
       A3[dyi_export<br/>backfill + self-DMs]
+      A4[dm_fetch<br/>weekly, self-DM thread]
     end
     A1 --> N[Item + caption]
     A2 --> N
@@ -285,7 +287,8 @@ You run your export **and** a scheduled `cookie_fetch` through it; your backlog 
 | Image OCR | **Vision-LLM default** (image bytes to provider = accepted tradeoff); a **local OpenAI-compatible backend** (Ollama + Baidu Unlimited-OCR) is the opt-in swap for testing/offline — free unlimited, bytes stay on-machine | decided 2026-07-22; local swap added 2026-07-24; §7, §13.3 |
 | DB tech | SQLite (ledger) + LanceDB (RAG) | PgVector upgrade path |
 | Recurring ingest | `cookie_fetch` weekly, read-only | daily ceiling; never hourly |
-| DMs / backfill | `dyi_export` (occasional) | only safe DM route |
+| DMs — new posts (recurring) | **`dm_fetch`** weekly, read-only Playwright, self-thread only | decided 2026-08-19; dedicated profile, headed off-screen, challenge → stop, never auto-solved; reuses cookie_fetch's cadence/back-off rig |
+| DMs — history / backfill | `dyi_export` (occasional) | only route to already-sent DMs |
 | DYI export format | **JSON only** — an HTML-format export is refused loudly with re-request-as-JSON guidance | decided 2026-07-23 — narrows checklist F1's "JSON + HTML shapes"; the export UI offers JSON, so an HTML parser is built only if a JSON export is ever genuinely unavailable |
 | New items | `share_capture` share-sheet | zero-risk end state |
 | Data Portability API | Deferred | registry-gated; no DM data type; US-uncertain |
